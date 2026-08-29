@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D导演台</title>
+    <style>
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+        background: #090909;
+      }
+    </style>
+    <script type="module" crossorigin src="/director/assets/index-oQuo7db8.js"></script>
+    <link rel="stylesheet" crossorigin href="/director/assets/index-BaMsYsAL.css">
+    <script>
+      // 导演页面内部监听退出按键，通过 postMessage 通知父页面关闭浮层，
+      // 保证鼠标/焦点落在 iframe 内部时退出事件仍能触达画布页面。
+      window.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: "storyai:director-close" }, window.location.origin);
+        }
+      }, true);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+  </body>
+  </html>

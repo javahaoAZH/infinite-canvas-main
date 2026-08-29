@@ -1,0 +1,12 @@
+.next/
+out/
+node_modules/
+.env*
+!.env.example
+data/
+/director/
+*.log
+/InfiniteCanvas.exe
+*.tsbuildinfo
+.DS_Store
+.idea
