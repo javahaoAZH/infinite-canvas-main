@@ -2,11 +2,12 @@
 // （https://github.com/zenstory-ai/drama-skills ，MIT License，基线 commit 3ab6b8550bbccef71001d2187e2b2ac9a74ab917）
 // 的 AI 漫剧创作方法论，已按本项目 JSON 数据结构与浏览器直连生成场景用自己的话改写，并裁剪 CLI 工程流程相关内容。
 // 本轮深化新增依据的仓库文件：
-// - skills/short-drama-develop/references/genre-cards/*.md（12 张题材卡，GENRE_CARDS）
+// - skills/short-drama-develop/references/genre-cards/*.md（18 张题材卡，GENRE_CARDS）
 // - skills/short-drama-storyboard/references/comic-keyframe-lexicon.md（镜头级可读性词表，FRAME_LEXICON）
 // - skills/short-drama-video-prompts/SKILL.md、references/motion-recipe.md、references/camera-audio-continuity.md（buildShotVideoPrompt）
 // - skills/short-drama-write/SKILL.md（[VO]/[OS] 生产标签，旁白字段）、references/dialogue-craft.md、references/scene-sound-dramaturgy.md（对白手艺）
 // - skills/short-drama-assets/references/voice-direction.md（VOICE_DIRECTION_GUIDE）
+// 本轮扩充依据：番茄/红果短剧榜单热门题材调研（新增 6 张题材卡）、场景/世界观预设（SCENE_PRESETS）与题材推荐场景映射、3D 系画风三条
 
 // 剧本结构化系统提示词：输出 JSON schema 保持兼容（新增可选旁白字段），内容质量规则含
 // 对白即行动、每场必有变化、一镜一职责、角色身份锚点、对白手艺与旁白规则
@@ -23,7 +24,7 @@ export const SCRIPT_STRUCTURE_SYSTEM_PROMPT =
 
 export type DramaGenreCard = { id: string; label: string; points: string[] };
 
-// 12 张题材卡：每张压缩为 5-8 条核心条目（压力来源、人物策略与信息权限、观众回报落点、钩子取向、禁止漂移），
+// 18 张题材卡：每张压缩为 5-8 条核心条目（压力来源、人物策略与信息权限、观众回报落点、钩子取向、禁止漂移），
 // 作为剧本系统提示词的校准参考而非硬规则，与用户输入冲突时以用户输入为准
 export const GENRE_CARDS: DramaGenreCard[] = [
     {
@@ -167,6 +168,72 @@ export const GENRE_CARDS: DramaGenreCard[] = [
             "禁止漂移：不让动作更大而任务状态不变；不让主角能力上限随剧情浮动；不用剪辑加速代替可追踪的空间关系",
         ],
     },
+    {
+        id: "system-flow",
+        label: "系统流",
+        points: [
+            "压力来源：任务面板倒计时、积分负债、升级惩罚；系统发布任务带条件与代价，不是白给",
+            "人物策略：算计规则漏洞与性价比、藏面板藏身份、用低级权限办高级事",
+            "观众回报是数值当场兑现：属性跳涨、任务结算、权限解锁等可见变化",
+            "钩子取向：面板弹出新任务指向下一集场景、系统来源成谜逐步揭底",
+            "禁止漂移：系统不能万能兜底消除危机、不给无代价奖励、不用面板字幕替代画面动作",
+        ],
+    },
+    {
+        id: "apocalypse-survive",
+        label: "末世诡异求生",
+        points: [
+            "压力来源：物资按集数递减、规则类怪物（违反即死）、人比怪物更危险",
+            "人物策略：先摸规则再行动、囤物资立据点、用规则反杀诡异",
+            "观众回报是废墟中安全屋与充足物资的反差爽感、怪物被规则反噬",
+            "钩子取向：新规则纸条或新怪物轮廓在集末出现、据点外传来敲门声",
+            "禁止漂移：不写无逻辑血浆屠杀、怪物要有可观察的行为规则、废土灰绿低饱和色调不漂成明亮都市",
+        ],
+    },
+    {
+        id: "cute-baby",
+        label: "萌宝团宠",
+        points: [
+            "压力来源：幼童主角资质被低估或身世被弃、资源匮乏的集体（最穷宗门/落魄家庭）",
+            "人物策略：萌宝以童言与天赋无心破局、周围强者主动护短层层加码宠爱",
+            "观众回报是被集体温柔接住的情绪抚慰、成长速度碾压预期",
+            "钩子取向：新成员加入团宠阵营、萌宝无意间触发更大机缘",
+            "禁止漂移：萌宝受虐卖惨不超过一集、不让成人阴谋压过治愈基调、团宠要有代价与成长不只被宠",
+        ],
+    },
+    {
+        id: "farming-era",
+        label: "种田经营",
+        points: [
+            "压力来源：粮草断绝或家徒四壁的硬生存指标、天灾与人性双重考验",
+            "人物策略：用现代知识做生产微创新、逐项解锁开荒→囤粮→集市→商路",
+            "观众回报是可视化资产积累：粮仓变满、茅屋换瓦房、账本数字增长",
+            "钩子取向：新作物或新手艺在集末露苗头、外来势力盯上产业",
+            "禁止漂移：不跳过经营过程直接暴富、年代道具不出穿帮（军大衣、搪瓷缸、二八大杠）、致富线始终压过感情线",
+        ],
+    },
+    {
+        id: "war-god",
+        label: "战神归来",
+        points: [
+            "压力来源：主角身份被当众贬损（赘婿/退伍归来受辱）、羞辱者掌握当下话语权",
+            "人物策略：隐忍亮牌节奏可控、每次只揭一层身份、用旧部与功绩降维打击",
+            "观众回报是身份揭晓瞬间全场态度反转、排场逐级抬升（车队、勋章、大佬行礼）",
+            "钩子取向：更高层级旧部在集末现身、新反派不信邪继续挑衅",
+            "禁止漂移：不一集亮完全部底牌、不靠头衔口播代替可见信物、受辱必须产生具体后果",
+        ],
+    },
+    {
+        id: "big-female-lead",
+        label: "大女主事业流",
+        points: [
+            "压力来源：女主面对结构性压迫（家族获罪/行业排挤/朝堂倾轧）、不靠婚姻关系解困",
+            "人物策略：女主全程主动决策、男性角色仅承担对手或下属功能、感情线不占主线",
+            "观众回报是每集一个可量化事业进展：夺权、开张、平冤、扩土",
+            "钩子取向：更大的局在集末展开、新对手带着新规则登场",
+            "禁止漂移：不插入三角恋与雌竞拉扯、不让男主救场、事业目标全剧贯穿不随感情线收束",
+        ],
+    },
 ];
 
 // 题材系统提示词组装：卡是校准参考不是硬规则，条目短、可被用户输入覆盖
@@ -178,7 +245,7 @@ export function buildScriptSystemPrompt(genreId: string): string {
 
 export type DramaArtStyle = { id: string; label: string; promptBase: string };
 
-// 九种画面风格：默认不追加风格段；其余八种的 promptBase 是可直接拼进提示词的可观察写法，
+// 十二种画面风格：默认不追加风格段；其余十一种的 promptBase 是可直接拼进提示词的可观察写法，
 // 只描述线条、上色、光影、质感特征，不使用“高质量/精美”类空泛词
 export const ART_STYLES: DramaArtStyle[] = [
     { id: "default", label: "默认", promptBase: "" },
@@ -190,7 +257,48 @@ export const ART_STYLES: DramaArtStyle[] = [
     { id: "hk-retro", label: "复古港漫", promptBase: "粗黑外轮廓线，硬朗方折衣纹，网点排线阴影，浓烈撞色，笔触粗犷" },
     { id: "watercolor", label: "水彩", promptBase: "水彩湿画晕染，颜色边缘自然渗化，浅色多层叠涂，保留纸纹颗粒" },
     { id: "minimal", label: "极简", promptBase: "几何简化造型，粗细一致的单一勾勒线，三到五色限定配色，大面积留白" },
+    { id: "pixar-3d", label: "3D卡通", promptBase: "圆润饱满的3D立体造型，柔和体积光照明，色彩明亮饱和，皮肤带半透明质感，毛发绒感细腻，背景浅景深虚化" },
+    { id: "cel-3d", label: "三渲二", promptBase: "3D建模体积感，平涂两档色块上色，细密轮廓描边，阴影边缘硬切，高光锐利集中，整体呈2D动画画面质感" },
+    { id: "game-cg", label: "游戏CG", promptBase: "写实倾向的3D渲染，金属皮革布料材质分明，电影级布光，冷暖色温对比，面部光影层次细腻，景深层次清晰" },
 ];
+
+export type DramaScenePreset = { id: string; label: string; atmosphere: string; excludes: string };
+
+// 场景/世界观预设：atmosphere 为可观察写法的场景陈设/服化道/光色基调，excludes 为单句排除项；
+// 在角色四视图 / 分镜图 / 图生视频三个视觉步骤拼入提示词，空选（""）表示不指定场景
+export const SCENE_PRESETS: DramaScenePreset[] = [
+    { id: "modern-urban", label: "现代都市", atmosphere: "玻璃幕墙写字楼与夜景霓虹，西装晚礼服与都市便装，冷灰金色调", excludes: "画面不出现古装陈设" },
+    { id: "ancient-palace", label: "古代宫廷", atmosphere: "深宫宅院红墙金瓦，簪钗罗裙与烛影帷幔，沉郁暖金色调", excludes: "画面不出现现代物件与电器" },
+    { id: "ancient-rural", label: "古代乡野边关", atmosphere: "茅屋农田与炊烟集市，粗布麻衣，土黄暖调质朴光", excludes: "画面不出现现代建筑与车辆" },
+    { id: "xianxia-cloud", label: "仙侠云海", atmosphere: "悬浮仙山云海与发光法阵流光，汉服广袖与玉簪法器，青金高饱和仙气光效", excludes: "画面不出现现代服饰与电器" },
+    { id: "era-80s", label: "八零年代小镇", atmosphere: "供销社老街与二八大杠自行车，军大衣搪瓷缸缝纫机，暖黄胶片颗粒感", excludes: "画面不出现智能手机等当代物件" },
+    { id: "apocalypse-waste", label: "末世废土", atmosphere: "城市废墟藤蔓侵蚀，防毒面具与破旧装备，灰绿低饱和色调", excludes: "画面不出现明亮整洁的现代都市陈设" },
+    { id: "eerie-city", label: "诡异暗都", atmosphere: "昏暗走廊与白纸灯笼，冷青色调中突兀的暖光", excludes: "画面不出现明亮欢快的配色" },
+    { id: "cyber-night", label: "赛博雨夜", atmosphere: "霓虹雨夜与全息广告牌，机械义体，湿滑街面反光，青紫高对比霓虹", excludes: "画面不出现古风与自然田园元素" },
+    { id: "campus-day", label: "校园日常", atmosphere: "教室课桌走廊与操场校服，樱花树，明亮清透色调", excludes: "画面不出现社会职场场景陈设" },
+];
+
+// 场景 id → 场景预设；未知/空 id 返回 null（等价不追加场景段）
+export function resolveScenePreset(sceneId: string): DramaScenePreset | null {
+    return SCENE_PRESETS.find((scene) => scene.id === sceneId) || null;
+}
+
+// 题材 → 推荐场景映射：选择题材后若用户未手动改过场景则自动联动；键对应 GENRE_CARDS 的 id，无映射的题材不联动
+export const GENRE_SCENE_HINTS: Record<string, string> = {
+    "palace-intrigue": "ancient-palace",
+    "xianxia": "xianxia-cloud",
+    "apocalypse-survive": "apocalypse-waste",
+    "suspense-rules": "eerie-city",
+    "farming-era": "ancient-rural",
+    "system-flow": "cyber-night",
+    "revenge": "modern-urban",
+    "rich-romance": "modern-urban",
+    "reunion": "modern-urban",
+    "workplace-comedy": "modern-urban",
+    "war-god": "modern-urban",
+    "big-female-lead": "ancient-palace",
+    "cute-baby": "xianxia-cloud",
+};
 
 // 自定义画风：用户在第三步填写可观察写法的风格描述，替换画风基底位置
 export const CUSTOM_ART_STYLE_ID = "custom";
@@ -215,9 +323,9 @@ export type ShotFrameKind = "narrative" | "dialogue" | "action";
 
 // 镜头级可读性约束词表（按帧型）：只写该帧型最常见的真实可读性风险，不堆万能排除清单
 export const FRAME_LEXICON: Record<ShotFrameKind, string[]> = {
-    narrative: ["视觉重点清楚，不被氛围层遮挡，前中后景层级分明"],
-    dialogue: ["面部识别点与目光可辨，背景不争夺注意中心"],
-    action: ["特效起点与受力点可辨，人物轮廓与特效层次分离"],
+    narrative: ["视觉重点清楚，不被氛围层遮挡，前中后景层级分明", "身份锚点清晰可辨，不被氛围层吞没"],
+    dialogue: ["面部识别点与目光可辨，背景不争夺注意中心", "关键手势与持物不被画框裁掉"],
+    action: ["特效起点与受力点可辨，人物轮廓与特效层次分离", "粒子与碎片不遮挡身份锚点"],
 };
 
 // 帧型粗分（不改剧本 JSON schema）：有对白 = 对话镜头；含动作/特效关键词 = 动作帧；其余 = 叙事帧
@@ -229,42 +337,53 @@ export function classifyShotFrame(shot: { description?: string; dialogue?: strin
     return "narrative";
 }
 
-// 角色立绘提示词：身份锚点（角色描述）在前 → 立绘构图与纯白背景 → 风格基底 → 四视图一致性
-export function buildCharacterImagePrompt(description: string, artStylePromptBase: string): string {
+// 角色立绘提示词：身份锚点（角色描述）在前 → 立绘构图与纯白背景 → 风格基底 → 场景氛围（可选）→ 四视图一致性
+export function buildCharacterImagePrompt(description: string, artStylePromptBase: string, scenePreset?: DramaScenePreset | null): string {
     const style = artStylePromptBase.trim();
     return [
         `${description.trim()}，角色立绘，全身像，纯白背景`,
         ...(style ? [style] : []),
+        ...(scenePreset ? [scenePreset.atmosphere] : []),
         "同一角色各视图保持同一时刻、同一造型与同一配色，发型服饰特征完全一致",
     ].join("，");
 }
 
-// 分镜图提示词：主体与身份锚点 → 构图视角 → 光色与材质 → 背景边界 → 风格基底 → 帧型可读性约束 → 普适禁止项
-export function buildShotImagePrompt(shotDescription: string, artStylePromptBase: string, frameKind: ShotFrameKind = "narrative"): string {
+// 分镜图提示词：主体与身份锚点（含出场角色锚点）→ 构图视角 → 光色与材质 → 背景边界 → 风格基底 → 帧型可读性约束 → 场景氛围与排除 → 普适禁止项
+export function buildShotImagePrompt(
+    shotDescription: string,
+    artStylePromptBase: string,
+    frameKind: ShotFrameKind = "narrative",
+    scenePreset?: DramaScenePreset | null,
+    characterAnchors?: string[],
+): string {
     const style = artStylePromptBase.trim();
     return [
-        `${shotDescription.trim()}，高质量分镜画面`,
+        shotDescription.trim(),
         "画面主体突出，身份特征清晰可辨",
+        ...(characterAnchors?.length ? [`出场角色：${characterAnchors.join("；")}`] : []),
         "构图与视角贴合本镜情绪",
         "光源方向明确，材质区分清晰",
         "画框内只呈现描述中出现的人和物，背景边界清楚",
         ...(style ? [style] : []),
         ...FRAME_LEXICON[frameKind],
+        ...(scenePreset ? [scenePreset.atmosphere, scenePreset.excludes] : []),
         "画面无文字，无水印",
     ].join("，");
 }
 
-// 图生视频提示词：静态锚点 → 触发 → 主体动作 → 次级反应 → 运镜 → 终点的因果链；
+// 图生视频提示词：静态锚点 → 触发 → 主体动作 → 次级反应 → 时长约束 → 运镜 → 终点的因果链；
 // 运镜不与人物动作争夺注意力；一条提示词只表达一个主导戏剧变化；不写“保持不变”类无效指令
-export function buildShotVideoPrompt(shotDescription: string, artStylePromptBase: string): string {
+export function buildShotVideoPrompt(shotDescription: string, artStylePromptBase: string, seconds?: number, scenePreset?: DramaScenePreset | null): string {
     const style = artStylePromptBase.trim();
     return [
         `以当前画面为静态起点，${shotDescription.trim()}`,
         "画面先保持起始状态，由画面内可见的事件触发后才开始动作",
         "主体动作与次级反应按因果先后衔接，不并列罗列",
+        ...(seconds ? [`在${seconds}秒内完成全部动作，节奏匹配时长`] : []),
         "运镜要有动机，不与人物动作争夺注意力",
-        "结尾停在明确可确认的画面状态",
+        "结尾停在明确可确认的画面状态，与描述终点一致",
         ...(style ? [style] : []),
+        ...(scenePreset ? [scenePreset.atmosphere] : []),
     ].join("，");
 }
 
@@ -272,11 +391,18 @@ export function buildShotVideoPrompt(shotDescription: string, artStylePromptBase
 // 审查清单提炼自本项目剧本规则；每条结论必须引用原文短句作证据；固定三档结论，不做数字打分
 export const SHOTS_REVIEW_SYSTEM_PROMPT =
     "你是漫剧分镜的独立评审员，没有参与当前版本的创作，只依据用户提供的文本客观评估，不偏袒、不迁就既有写法。" +
-    "审查清单：一对白即行动，每句对白有戏剧目的，没有角色向观众朗读剧情资料；二每场至少改变信息、权力、关系、情绪或风险之一，场尾留下悬念；三一镜一职责，每镜只承担一个主要功能、只有一个主导戏剧变化；四角色身份锚点可见、可生成、可比较，没有空泛词；五画面描述只写镜头起点时刻可见的人物、道具与状态，不写心理与过程。" +
+    "审查清单：一对白即行动，每句对白有戏剧目的，没有角色向观众朗读剧情资料；二每场至少改变信息、权力、关系、情绪或风险之一，场尾留下悬念；三一镜一职责，每镜只承担一个主要功能、只有一个主导戏剧变化；四角色身份锚点可见、可生成、可比较，没有空泛词；五画面描述只写镜头起点时刻可见的物理事实（人物、道具与状态），不含心理活动、过程性叙述与不可生成的抽象描述。" +
     "每条结论必须引用原文短句作为证据，没有证据不下结论；只指出文本中真实存在的问题，不追加清单之外的要求。" +
     "严格按以下 JSON 输出，不要输出任何其他文字、注释或代码块标记：" +
     "{\"verdict\":\"pass 或 revise 或 rework\",\"findings\":[{\"severity\":\"blocker 或 major 或 minor 或 note\",\"location\":\"镜号或角色名\",\"evidence\":\"原文短引文\",\"impact\":\"影响\",\"suggestion\":\"修订建议\"}]}" +
     "，verdict 含义：pass 通过、revise 建议修改、rework 需修改；存在 blocker 时 verdict 必须是 rework。";
+
+// 分镜 AI 自动修改系统提示词：按审查 findings 的建议逐镜修改，保持镜头数量与顺序不变，严格输出与输入等长的 JSON
+export const SHOTS_AUTOFIX_SYSTEM_PROMPT =
+    "你是漫剧分镜的修改助手。用户会给你当前分镜 JSON 与审查结论（每条结论包含位置、证据与修订建议）。修改规则：" +
+    "一、按每条结论的建议修改对应镜头；二、保持镜头数量与顺序完全不变；三、不修改结论未涉及的镜头；四、角色名与原文保持一致；五、画面描述保持只写可见特征的可观察写法，不添加“高质量/精美”类空泛词。" +
+    "严格按以下 JSON 格式输出，shots 数组长度必须与输入一致，不要输出任何其他文字、注释或代码块标记：" +
+    "{\"shots\":[{\"description\":\"\",\"dialogue\":\"\",\"narration\":\"\",\"seconds\":5}]}";
 
 // 全局配音指引（仅作为设置界面的说明文案，不拼进对白文本，避免被 TTS 朗读）：
 // 方法论来自 voice-direction.md——声音身份与表演分离、选型判据带反例、易混角色区分、专名发音唯一化
@@ -288,3 +414,25 @@ export const VOICE_DIRECTION_GUIDE =
 
 // 配音说明：TTS 请求只接受对白文本（requestAudioGeneration 无逐条指令参数，instructions 为全局设置），
 // 拼接音色方向文字会被多数 TTS 渠道朗读出来，因此不提供配音方向提示构建函数。
+
+// Qoder 通道技能规范目录（MCP 工具 drama_get_skills 数据源）：复用本文件常量作单一来源，
+// 供外部大脑（Qoder）在产出剧本 / 分镜 / 角色前拉取对齐，不在适配器或桥内重复维护
+export const DRAMA_SHOT_RULES =
+    "分镜写法规范：一、画面描述只写镜头起点时刻可见的物理事实（人物、道具与状态），不含心理活动、过程性叙述与不可生成的抽象描述；" +
+    "二、一镜一职责，每镜只承担一个主要功能、只有一个主导戏剧变化，每次切镜必须带来信息、权力、情绪、空间或节奏之一的变化；" +
+    "三、对白即行动，每句对白有戏剧目的，不让角色向观众朗读剧情资料；每场至少改变信息、权力、关系、情绪或风险之一，场尾留悬念；" +
+    "四、每镜时长 seconds 取 1-30 秒；开场镜比工作景别宽一档，地理信息通过人物动作在画面内部交代，不用空镜全景开场；" +
+    "五、相邻两镜画面描述不得完全相同；对白与旁白可为空字符串，旁白（画外音）不重复对白与画面已呈现的内容。";
+
+export const DRAMA_CHARACTER_RULES =
+    "角色描述规范：只写可观察的外貌特征——发型、发色、五官与体型、服饰件数与材质、标志物等身份锚点，要求可见、可生成、可比较，直接作为立绘提示词基底；" +
+    "不写心理活动与性格标签，不使用「气质出众」类空泛词；同名角色沿用已有立绘与视图分配。";
+
+export const DRAMA_SKILL_CATALOG = {
+    genres: GENRE_CARDS,
+    scenes: SCENE_PRESETS,
+    artStyles: ART_STYLES,
+    frameLexicon: FRAME_LEXICON,
+    shotRules: DRAMA_SHOT_RULES,
+    characterRules: DRAMA_CHARACTER_RULES,
+};

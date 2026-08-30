@@ -8,11 +8,10 @@ import { useRouter } from "next/navigation";
 
 import { CanvasNodeType, type CanvasNodeData, type InsertAssetPayload } from "@/app/(user)/canvas/types";
 import { useCanvasStore } from "@/app/(user)/canvas/stores/use-canvas-store";
-import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
-import { resolveMediaUrl } from "@/services/file-storage";
-import { createRenderTask, getRenderTask, RENDER_POLL_INTERVAL_MS, type RenderTaskResponse, type RenderTimelineSpec } from "@/services/api/render";
-import { dramaAudioConfig, useDramaStore, type DramaMedia, type DramaProject } from "@/stores/use-drama-store";
-import { useEffectiveConfig, useConfigStore } from "@/stores/use-config-store";
+import { createDramaRender, generateVoiceAudio } from "@/app/(user)/drama/services/drama-generation";
+import { getRenderTask, RENDER_POLL_INTERVAL_MS, type RenderTaskResponse } from "@/services/api/render";
+import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
+import { useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 type VoiceKind = "dialogue" | "narration";
@@ -27,8 +26,6 @@ export function VoiceStep({ project }: { project: DramaProject }) {
     const { message } = App.useApp();
     const router = useRouter();
     const effectiveConfig = useEffectiveConfig();
-    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const updateProject = useDramaStore((state) => state.updateProject);
     const token = useUserStore((state) => state.token);
     const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
@@ -49,17 +46,8 @@ export function VoiceStep({ project }: { project: DramaProject }) {
         ...((shot.narration || "").trim() ? [{ shotId: shot.id, shotIndex: index, kind: "narration" as const, text: (shot.narration || "").trim() }] : []),
     ]);
 
-    const patchShotAudio = (key: string, media: DramaMedia) => {
-        const current = useDramaStore.getState().projects.find((item) => item.id === project.id);
-        updateProject(project.id, { shotAudios: { ...(current?.shotAudios || {}), [key]: media } });
-    };
-
     const generateRowAudio = async (row: VoiceRow) => {
-        const config = dramaAudioConfig(effectiveConfig);
-        if (!isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的音频模型渠道");
-        const blob = await requestAudioGeneration(config, row.text);
-        const stored = await storeGeneratedAudio(blob);
-        patchShotAudio(voiceAudioKey(row), { url: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, mimeType: stored.mimeType, durationMs: stored.durationMs });
+        await generateVoiceAudio(project.id, voiceAudioKey(row), effectiveConfig);
     };
 
     const runSingle = async (row: VoiceRow) => {
@@ -123,33 +111,15 @@ export function VoiceStep({ project }: { project: DramaProject }) {
         router.push(`/canvas/view?id=${canvasProjectId}`);
     };
 
+    // 一键成片：时间线组装与任务创建已抽取为 createDramaRender（与 Qoder 通道共用），此处保留校验提示与轮询展示
     const buildFinalVideo = async () => {
         if (!token) return message.warning("请先登录后再使用一键成片");
-        const shotsWithVideo = project.shots.filter((shot) => project.shotVideos[shot.id]);
-        if (!shotsWithVideo.length) return message.warning("请先生成至少一个分镜视频");
+        if (!project.shots.some((shot) => project.shotVideos[shot.id])) return message.warning("请先生成至少一个分镜视频");
         setRenderSubmitting(true);
         setRenderError("");
         setRenderTask(null);
         try {
-            const items: RenderTimelineSpec["items"] = [];
-            let width = 1280;
-            let height = 720;
-            for (const shot of shotsWithVideo) {
-                const video = project.shotVideos[shot.id];
-                const videoUrl = await resolveMediaUrl(video.storageKey, video.url);
-                if (videoUrl.startsWith("blob:")) throw new Error("分镜视频保存在本地浏览器中，请登录并重新生成视频后再一键成片");
-                if (video.width && video.height) ({ width, height } = { width: video.width, height: video.height });
-                items.push({ kind: "video", source: videoUrl });
-                for (const key of [shot.id, `${shot.id}:narration`]) {
-                    const audio = project.shotAudios[key];
-                    if (!audio) continue;
-                    const audioUrl = await resolveMediaUrl(audio.storageKey, audio.url);
-                    if (audioUrl.startsWith("blob:")) throw new Error("分镜配音保存在本地浏览器中，请登录并重新生成配音后再一键成片");
-                    items.push({ kind: "audio", source: audioUrl, durationMs: audio.durationMs || Math.max(1000, Math.round((shot.seconds || 5) * 1000)) });
-                }
-            }
-            const timeline: RenderTimelineSpec = { fps: 30, width, height, items };
-            const task = await createRenderTask(token, timeline);
+            const task = await createDramaRender(project.id);
             setRenderTask(task);
             pollingRef.current = true;
             while (pollingRef.current && task.status !== "completed" && task.status !== "failed") {

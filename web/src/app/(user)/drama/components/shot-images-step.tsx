@@ -4,48 +4,24 @@ import { ImagePlus, Images, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { App, Button, Empty, Tag } from "antd";
 
-import { buildShotImagePrompt, classifyShotFrame, resolveArtStyleBase, resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
-import { requestEdit, requestGeneration } from "@/services/api/image";
-import { uploadImage } from "@/services/image-storage";
-import { collectCharacterReferences, dramaImageConfig, useDramaStore, type DramaMedia, type DramaProject } from "@/stores/use-drama-store";
-import { useEffectiveConfig, useConfigStore } from "@/stores/use-config-store";
+import { resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
+import { generateShotImage } from "@/app/(user)/drama/services/drama-generation";
+import { collectCharacterReferences, useDramaStore, type DramaProject } from "@/stores/use-drama-store";
+import { useEffectiveConfig } from "@/stores/use-config-store";
 
 export function ShotImagesStep({ project }: { project: DramaProject }) {
     const { message } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
-    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const updateProject = useDramaStore((state) => state.updateProject);
     const artStyle = useDramaStore((state) => state.artStyle);
     const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [batchRunning, setBatchRunning] = useState(false);
 
-    const patchShotImage = (shotId: string, media: DramaMedia) => {
-        const current = useDramaStore.getState().projects.find((item) => item.id === project.id);
-        updateProject(project.id, { shotImages: { ...(current?.shotImages || {}), [shotId]: media } });
-    };
-
-    const generateShotImage = async (shotId: string) => {
-        const shot = useDramaStore.getState().projects.find((item) => item.id === project.id)?.shots.find((item) => item.id === shotId);
-        if (!shot) return;
-        if (!shot.description.trim()) throw new Error("请先在分镜步骤填写画面描述");
-        const config = dramaImageConfig(effectiveConfig);
-        if (!isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的图片模型渠道");
-        const references = collectCharacterReferences(useDramaStore.getState().projects.find((item) => item.id === project.id)?.characters || []);
-        const state = useDramaStore.getState();
-        const prompt = buildShotImagePrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), classifyShotFrame(shot));
-        const images = references.length ? await requestEdit(config, prompt, references) : await requestGeneration(config, prompt);
-        const image = images[0];
-        if (!image) throw new Error("图片接口没有返回结果");
-        const uploaded = await uploadImage(image.dataUrl);
-        patchShotImage(shotId, { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType });
-    };
-
     const runSingle = async (shotId: string) => {
         setBusyIds((current) => ({ ...current, [shotId]: true }));
         setErrors((current) => ({ ...current, [shotId]: "" }));
         try {
-            await generateShotImage(shotId);
+            await generateShotImage(project.id, shotId, effectiveConfig);
         } catch (error) {
             setErrors((current) => ({ ...current, [shotId]: error instanceof Error ? error.message : "分镜图生成失败，可重试" }));
         } finally {
@@ -62,7 +38,7 @@ export function ShotImagesStep({ project }: { project: DramaProject }) {
             setBusyIds((current) => ({ ...current, [shot.id]: true }));
             setErrors((current) => ({ ...current, [shot.id]: "" }));
             try {
-                await generateShotImage(shot.id);
+                await generateShotImage(project.id, shot.id, effectiveConfig);
             } catch (error) {
                 failed += 1;
                 setErrors((current) => ({ ...current, [shot.id]: error instanceof Error ? error.message : "分镜图生成失败，可重试" }));

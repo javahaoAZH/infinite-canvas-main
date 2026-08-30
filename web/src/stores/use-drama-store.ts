@@ -63,6 +63,8 @@ type DramaStore = {
     customArtStyle: string;
     // 剧本题材卡（drama/prompts.ts 中 GENRE_CARDS 的 id），空字符串表示不指定
     genre: string;
+    // 场景/世界观预设（drama/prompts.ts 中 SCENE_PRESETS 的 id），空字符串表示不指定，角色四视图 / 分镜图 / 图生视频三个视觉步骤共用
+    scene: string;
     createProject: (title?: string) => string;
     openProject: (id: string) => void;
     renameProject: (id: string, title: string) => void;
@@ -71,6 +73,7 @@ type DramaStore = {
     setArtStyle: (artStyle: string) => void;
     setCustomArtStyle: (customArtStyle: string) => void;
     setGenre: (genre: string) => void;
+    setScene: (scene: string) => void;
 };
 
 const DRAMA_STORE_KEY = "infinite-canvas:drama_store";
@@ -134,9 +137,10 @@ const dramaStorage: PersistStorage<DramaStore> = {
         const parsed = JSON.parse(value) as StorageValue<DramaStore>;
         // 旧数据无 artStyle 字段时回落默认，不报错
         parsed.state.artStyle = typeof parsed.state.artStyle === "string" && parsed.state.artStyle.trim() ? parsed.state.artStyle : "default";
-        // 旧数据无自定义画风与题材字段时回落空（等价默认画风 / 不指定题材）
+        // 旧数据无自定义画风、题材与场景字段时回落空（等价默认画风 / 不指定题材 / 不指定场景）
         parsed.state.customArtStyle = typeof parsed.state.customArtStyle === "string" ? parsed.state.customArtStyle : "";
         parsed.state.genre = typeof parsed.state.genre === "string" ? parsed.state.genre : "";
+        parsed.state.scene = typeof parsed.state.scene === "string" ? parsed.state.scene : "";
         parsed.state.projects = await Promise.all((parsed.state.projects || []).map(hydrateProject));
         return parsed;
     },
@@ -152,6 +156,7 @@ export const useDramaStore = create<DramaStore>()(
             artStyle: "default",
             customArtStyle: "",
             genre: "",
+            scene: "",
             createProject: (title) => {
                 const project = createDramaProject(title || "");
                 set((state) => ({ projects: [project, ...state.projects], activeId: project.id }));
@@ -176,11 +181,12 @@ export const useDramaStore = create<DramaStore>()(
             setArtStyle: (artStyle) => set({ artStyle: artStyle.trim() || "default" }),
             setCustomArtStyle: (customArtStyle) => set({ customArtStyle }),
             setGenre: (genre) => set({ genre }),
+            setScene: (scene) => set({ scene }),
         }),
         {
             name: DRAMA_STORE_KEY,
             storage: dramaStorage,
-            partialize: (state) => ({ projects: state.projects, activeId: state.activeId, artStyle: state.artStyle, customArtStyle: state.customArtStyle, genre: state.genre }) as StorageValue<DramaStore>["state"],
+            partialize: (state) => ({ projects: state.projects, activeId: state.activeId, artStyle: state.artStyle, customArtStyle: state.customArtStyle, genre: state.genre, scene: state.scene }) as StorageValue<DramaStore>["state"],
         },
     ),
 );

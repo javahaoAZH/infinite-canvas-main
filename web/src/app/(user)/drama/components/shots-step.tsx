@@ -1,18 +1,21 @@
 "use client";
 
-import { Plus, ScanSearch, Trash2 } from "lucide-react";
+import { Plus, ScanSearch, Trash2, WandSparkles } from "lucide-react";
 import { useState } from "react";
 import { App, Button, Empty, Input, InputNumber, Tag } from "antd";
 
-import { SHOTS_REVIEW_SYSTEM_PROMPT } from "@/app/(user)/drama/prompts";
-import { aiApiUrl, aiHeaders, refreshRemoteUser } from "@/services/api/image";
-import { dramaTextConfig, newDramaShot, useDramaStore, type DramaProject } from "@/stores/use-drama-store";
-import { useEffectiveConfig, useConfigStore } from "@/stores/use-config-store";
-
-type ReviewSeverity = "blocker" | "major" | "minor" | "note";
-type ReviewFinding = { severity: ReviewSeverity; location: string; evidence: string; impact: string; suggestion: string };
-type ReviewVerdict = "pass" | "revise" | "rework";
-type ReviewResult = { verdict: ReviewVerdict; findings: ReviewFinding[] };
+import { SHOTS_AUTOFIX_SYSTEM_PROMPT } from "@/app/(user)/drama/prompts";
+import {
+    applyAutofixShots,
+    callTextModel,
+    parseAutofixShots,
+    reviewShots,
+    type ReviewResult,
+    type ReviewSeverity,
+    type ReviewVerdict,
+} from "@/app/(user)/drama/services/drama-review";
+import { newDramaShot, useDramaStore, type DramaProject } from "@/stores/use-drama-store";
+import { useEffectiveConfig } from "@/stores/use-config-store";
 
 const SEVERITY_META: Record<ReviewSeverity, { label: string; color: string }> = {
     blocker: { label: "阻断", color: "red" },
@@ -26,76 +29,12 @@ const VERDICT_META: Record<ReviewVerdict, { label: string; color: string }> = {
     rework: { label: "需修改", color: "red" },
 };
 
-// 机械检查：纯前端代码，不调 LLM
-function runMechanicalChecks(project: DramaProject): ReviewFinding[] {
-    const findings: ReviewFinding[] = [];
-    if (!project.shots.length) {
-        findings.push({ severity: "blocker", location: "整体", evidence: "分镜列表为空", impact: "后续角色、分镜图、视频、配音步骤都依赖分镜", suggestion: "回到剧本步骤结构化，或点击右上角添加分镜" });
-    }
-    project.shots.forEach((shot, index) => {
-        const location = `分镜 ${index + 1}`;
-        if (!shot.description.trim()) {
-            findings.push({ severity: "blocker", location, evidence: "画面描述为空", impact: "无法生成分镜图与视频", suggestion: "补充场景、人物动作、构图的画面描述" });
-        }
-        if (!shot.dialogue.trim() && !(shot.narration || "").trim()) {
-            findings.push({ severity: "note", location, evidence: "对白与旁白均为空", impact: "配音步骤没有可生成的内容", suggestion: "若该镜需要配音，补充对白或旁白" });
-        }
-        if (shot.seconds < 1 || shot.seconds > 30) {
-            findings.push({ severity: "major", location, evidence: `时长 ${shot.seconds} 秒超出范围`, impact: "影响视频生成时长与成片节奏", suggestion: "将时长调整到 1-30 秒之间" });
-        }
-        const previous = project.shots[index - 1];
-        if (previous && shot.description.trim() && shot.description.trim() === previous.description.trim()) {
-            findings.push({ severity: "major", location, evidence: "画面描述与上一镜完全相同", impact: "相邻两镜呈现同一画面，浪费镜头", suggestion: "合并两镜，或改变景别、动作与信息" });
-        }
-    });
-    project.characters.forEach((character) => {
-        if (!character.description.trim()) {
-            findings.push({ severity: "major", location: `角色 ${character.name || "未命名"}`, evidence: "角色描述为空", impact: "无法生成立绘与分镜参考图", suggestion: "补充发型、服饰、标志物等可见的身份锚点" });
-        }
-    });
-    return findings;
-}
-
-function normalizeFinding(raw: { severity?: string; location?: string; evidence?: string; impact?: string; suggestion?: string }): ReviewFinding {
-    const severity = (["blocker", "major", "minor", "note"] as ReviewSeverity[]).includes(raw.severity as ReviewSeverity) ? (raw.severity as ReviewSeverity) : "minor";
-    return {
-        severity,
-        location: typeof raw.location === "string" && raw.location.trim() ? raw.location.trim() : "整体",
-        evidence: typeof raw.evidence === "string" ? raw.evidence.trim() : "",
-        impact: typeof raw.impact === "string" ? raw.impact.trim() : "",
-        suggestion: typeof raw.suggestion === "string" ? raw.suggestion.trim() : "",
-    };
-}
-
-const SEMANTIC_PARSE_ERROR = "AI 没有返回有效的审查结果";
-
-// 语义检查：单次文本生成调用，解析 LLM 返回的结构化 findings
-function parseSemanticReview(content: string): { verdict: ReviewVerdict; findings: ReviewFinding[] } {
-    const trimmed = content.replace(/```[a-zA-Z]*\n?/g, "").trim();
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
-    if (start < 0 || end <= start) throw new Error(SEMANTIC_PARSE_ERROR);
-    let parsed: { verdict?: string; findings?: unknown };
-    try {
-        parsed = JSON.parse(trimmed.slice(start, end + 1)) as { verdict?: string; findings?: unknown };
-    } catch {
-        throw new Error(SEMANTIC_PARSE_ERROR);
-    }
-    // 过滤掉 null/非对象元素后再 normalize，避免单条脏数据拖垮整份审查结果
-    const rawFindings = Array.isArray(parsed.findings) ? parsed.findings.filter((item): item is Record<string, string> => Boolean(item) && typeof item === "object") : [];
-    const findings = rawFindings.map(normalizeFinding);
-    const verdict = (["pass", "revise", "rework"] as ReviewVerdict[]).includes(parsed.verdict as ReviewVerdict)
-        ? (parsed.verdict as ReviewVerdict)
-        : findings.length ? "revise" : "pass"; // 未知/缺失 verdict 且无发现时回落 pass，避免“建议修改但零发现”
-    return { verdict, findings };
-}
-
 export function ShotsStep({ project }: { project: DramaProject }) {
     const { message } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
-    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const updateProject = useDramaStore((state) => state.updateProject);
     const [reviewing, setReviewing] = useState(false);
+    const [fixing, setFixing] = useState(false);
     // 审查结果只展示，不做持久化
     const [review, setReview] = useState<ReviewResult | null>(null);
     const [reviewError, setReviewError] = useState("");
@@ -109,58 +48,38 @@ export function ShotsStep({ project }: { project: DramaProject }) {
         setReviewing(true);
         setReviewError("");
         try {
-            const mechanical = runMechanicalChecks(project);
-            let semantic: { verdict: ReviewVerdict; findings: ReviewFinding[] } = { verdict: "pass", findings: [] };
-            let semanticError = "";
-            // 语义阶段单独包裹：任何失败都不丢弃已算出的机械检查结果
-            if (project.shots.length) {
-                try {
-                    const textConfig = dramaTextConfig(effectiveConfig);
-                    if (!isAiConfigReady(textConfig, textConfig.model)) {
-                        throw new Error("未配置可用的文本模型渠道");
-                    }
-                    const input = JSON.stringify({
-                        title: project.title,
-                        characters: project.characters.map((character) => ({ name: character.name, description: character.description })),
-                        shots: project.shots.map((shot, index) => ({ shot: index + 1, description: shot.description, dialogue: shot.dialogue, narration: shot.narration || "", seconds: shot.seconds })),
-                    });
-                    const response = await fetch(aiApiUrl(textConfig, "/chat/completions"), {
-                        method: "POST",
-                        headers: aiHeaders(textConfig, "application/json"),
-                        body: JSON.stringify({
-                            model: textConfig.model,
-                            messages: [
-                                { role: "system", content: SHOTS_REVIEW_SYSTEM_PROMPT },
-                                { role: "user", content: input },
-                            ],
-                            stream: false,
-                        }),
-                    });
-                    const payload = (await response.json().catch(() => ({}))) as {
-                        code?: number;
-                        msg?: string;
-                        error?: { message?: string };
-                        choices?: Array<{ message?: { content?: string | null } }>;
-                        data?: { choices?: Array<{ message?: { content?: string | null } }> };
-                    };
-                    if (!response.ok || (typeof payload.code === "number" && payload.code !== 0)) {
-                        throw new Error(payload.msg || payload.error?.message || `文本接口请求失败：${response.status}`);
-                    }
-                    refreshRemoteUser(textConfig);
-                    semantic = parseSemanticReview(payload.choices?.[0]?.message?.content || payload.data?.choices?.[0]?.message?.content || "");
-                } catch (error) {
-                    // 解析失败用固定友好文案，网络/接口失败统一提示，不暴露原始错误
-                    semanticError = error instanceof Error && error.message === SEMANTIC_PARSE_ERROR ? SEMANTIC_PARSE_ERROR : "语义审查失败，以下仅为机械检查结果";
-                }
-            }
-            const findings = [...mechanical, ...semantic.findings];
-            const hasBlocker = findings.some((finding) => finding.severity === "blocker");
-            const hasMajor = findings.some((finding) => finding.severity === "major");
-            const verdict: ReviewVerdict = hasBlocker || hasMajor || semantic.verdict === "rework" ? "rework" : findings.some((finding) => finding.severity === "minor") || semantic.verdict === "revise" ? "revise" : "pass";
-            setReview({ verdict, findings });
-            if (semanticError) setReviewError(semanticError);
+            const result = await reviewShots(project, effectiveConfig);
+            setReview({ verdict: result.verdict, findings: result.findings });
+            if (result.semanticError) setReviewError(result.semanticError);
         } finally {
             setReviewing(false);
+        }
+    };
+
+    // 一键按审查建议自动修改：返回分镜按索引合并回现有分镜（保留原 id），成功后清空审查结果引导重新审查
+    const runAutofix = async () => {
+        if (!review || !project.shots.length) return;
+        setFixing(true);
+        try {
+            const input = JSON.stringify({
+                shots: project.shots.map((shot, index) => ({ shot: index + 1, description: shot.description, dialogue: shot.dialogue, narration: shot.narration || "", seconds: shot.seconds })),
+                findings: review.findings.map((finding) => ({ severity: finding.severity, location: finding.location, evidence: finding.evidence, impact: finding.impact, suggestion: finding.suggestion })),
+            });
+            const content = await callTextModel(SHOTS_AUTOFIX_SYSTEM_PROMPT, input, effectiveConfig);
+            let returned: Array<Record<string, unknown>>;
+            try {
+                returned = parseAutofixShots(content);
+            } catch {
+                return message.error("AI 没有返回有效的修改结果，分镜未改动");
+            }
+            // 合并前在服务层重新读取最新分镜做等长校验，description 空值回退原值（不被清空）
+            const count = applyAutofixShots(project.id, returned);
+            message.success(`已按建议修改 ${count} 个分镜`);
+            setReview(null);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "自动修改失败，可重试");
+        } finally {
+            setFixing(false);
         }
     };
 
@@ -201,7 +120,12 @@ export function ShotsStep({ project }: { project: DramaProject }) {
                     <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-stone-700 dark:text-stone-200">审查结论</span>
                         <Tag color={VERDICT_META[review.verdict].color} className="m-0">{VERDICT_META[review.verdict].label}</Tag>
-                        <span className="text-xs text-stone-400 dark:text-stone-500">共 {review.findings.length} 条发现（机械检查 + 语义审查，只展示不改稿）</span>
+                        <span className="text-xs text-stone-400 dark:text-stone-500">共 {review.findings.length} 条发现（机械检查 + 语义审查，可一键按建议修改）</span>
+                        {review.findings.some((finding) => finding.suggestion) ? (
+                            <Button size="small" className="ml-auto" icon={<WandSparkles className="size-4" />} loading={fixing} onClick={() => void runAutofix()}>
+                                按建议自动修改
+                            </Button>
+                        ) : null}
                     </div>
                     {review.findings.length === 0 ? (
                         <p className="text-sm text-stone-500 dark:text-stone-400">没有发现问题。</p>

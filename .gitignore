@@ -8,11 +8,15 @@ data/
 *.log
 /InfiniteCanvas.exe
 /InfiniteCanvas.exe~
+/InfiniteCanvas.dev.exe
 /InfiniteCanvas.exe.WebView2/
 *.tsbuildinfo
 .DS_Store
 .idea
 /e2e-*.png
+/*.png
+.tmp-*.txt
+/enum-win-test.ps1
 /check_http_verify.js
 /check_proc.js
 /health_check_temp.ps1

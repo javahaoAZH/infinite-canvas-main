@@ -4,55 +4,28 @@ import { Clapperboard, LoaderCircle, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { App, Button, Empty, Progress, Tag } from "antd";
 
-import { buildShotVideoPrompt, resolveArtStyleBase, resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
-import { requestVideoGeneration } from "@/services/api/video";
-import { dramaVideoConfig, toReferenceImage, useDramaStore, type DramaMedia, type DramaProject } from "@/stores/use-drama-store";
-import { useEffectiveConfig, useConfigStore } from "@/stores/use-config-store";
+import { resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
+import { generateShotVideo } from "@/app/(user)/drama/services/drama-generation";
+import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
+import { useEffectiveConfig } from "@/stores/use-config-store";
 
 export function ShotVideosStep({ project }: { project: DramaProject }) {
     const { message } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
-    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const updateProject = useDramaStore((state) => state.updateProject);
     const artStyle = useDramaStore((state) => state.artStyle);
     const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
     const [progressMap, setProgressMap] = useState<Record<string, number>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [batchRunning, setBatchRunning] = useState(false);
 
-    const patchShotVideo = (shotId: string, media: DramaMedia) => {
-        const current = useDramaStore.getState().projects.find((item) => item.id === project.id);
-        updateProject(project.id, { shotVideos: { ...(current?.shotVideos || {}), [shotId]: media } });
-    };
-
-    const generateShotVideo = async (shotId: string) => {
-        const current = useDramaStore.getState().projects.find((item) => item.id === project.id);
-        const shot = current?.shots.find((item) => item.id === shotId);
-        const shotImage = current?.shotImages[shotId];
-        if (!shot || !shotImage) throw new Error("请先生成该分镜的分镜图");
-        const config = dramaVideoConfig(effectiveConfig);
-        if (!isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的视频模型渠道");
-        const state = useDramaStore.getState();
-        const prompt = buildShotVideoPrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle));
-        const result = await requestVideoGeneration(config, prompt, [toReferenceImage(shotImage, "分镜图")], (progress) => {
-            setProgressMap((prev) => ({ ...prev, [shotId]: progress }));
-        });
-        patchShotVideo(shotId, {
-            url: result.url,
-            storageKey: result.task.storageKey,
-            width: result.width,
-            height: result.height,
-            durationMs: result.durationMs,
-            mimeType: result.mimeType || "video/mp4",
-        });
-    };
-
     const runSingle = async (shotId: string) => {
         setBusyIds((current) => ({ ...current, [shotId]: true }));
         setErrors((current) => ({ ...current, [shotId]: "" }));
         setProgressMap((current) => ({ ...current, [shotId]: 0 }));
         try {
-            await generateShotVideo(shotId);
+            await generateShotVideo(project.id, shotId, effectiveConfig, (progress) => {
+                setProgressMap((prev) => ({ ...prev, [shotId]: progress }));
+            });
         } catch (error) {
             setErrors((current) => ({ ...current, [shotId]: error instanceof Error ? error.message : "视频生成失败，可重试" }));
         } finally {
@@ -69,7 +42,9 @@ export function ShotVideosStep({ project }: { project: DramaProject }) {
             setBusyIds((current) => ({ ...current, [shot.id]: true }));
             setErrors((current) => ({ ...current, [shot.id]: "" }));
             try {
-                await generateShotVideo(shot.id);
+                await generateShotVideo(project.id, shot.id, effectiveConfig, (progress) => {
+                    setProgressMap((prev) => ({ ...prev, [shot.id]: progress }));
+                });
             } catch (error) {
                 failed += 1;
                 setErrors((current) => ({ ...current, [shot.id]: error instanceof Error ? error.message : "视频生成失败，可重试" }));

@@ -464,6 +464,15 @@ export function useEffectiveConfig() {
     return useMemo(() => resolveEffectiveConfig(config, modelChannel, canUseRemoteChannel), [canUseRemoteChannel, config, modelChannel]);
 }
 
+// 非 hook 版：供组件外的单例执行器（如漫剧自动生产）实时读取当前生效配置，逻辑与 useEffectiveConfig 一致
+export function getEffectiveConfig(): AiConfig {
+    const { config, publicSettings } = useConfigStore.getState();
+    const modelChannel = publicSettings?.modelChannel || null;
+    const { token, user } = useUserStore.getState();
+    const canUseRemoteChannel = Boolean(token && user && (user.role === "admin" || modelChannel?.allowUserRemoteChannel === true));
+    return resolveEffectiveConfig(config, modelChannel, canUseRemoteChannel);
+}
+
 export function buildApiUrl(baseUrl: string, path: string) {
     let normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
     normalizedBaseUrl = normalizeVersionedBaseUrl(normalizedBaseUrl);

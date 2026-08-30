@@ -5,9 +5,8 @@ import { useState } from "react";
 import { App, Button, Empty, Input, Select, Tag } from "antd";
 import { nanoid } from "nanoid";
 
-import { ART_STYLES, buildCharacterImagePrompt, CUSTOM_ART_STYLE_ID, resolveArtStyleBase } from "@/app/(user)/drama/prompts";
-import { requestGeneration } from "@/services/api/image";
-import { uploadImage } from "@/services/image-storage";
+import { ART_STYLES, CUSTOM_ART_STYLE_ID, SCENE_PRESETS } from "@/app/(user)/drama/prompts";
+import { generateCharacterCandidates } from "@/app/(user)/drama/services/drama-generation";
 import {
     addCharacterAsset,
     CHARACTER_VIEW_LABELS,
@@ -29,6 +28,8 @@ export function CharactersStep({ project }: { project: DramaProject }) {
     const setArtStyle = useDramaStore((state) => state.setArtStyle);
     const customArtStyle = useDramaStore((state) => state.customArtStyle);
     const setCustomArtStyle = useDramaStore((state) => state.setCustomArtStyle);
+    const scene = useDramaStore((state) => state.scene);
+    const setScene = useDramaStore((state) => state.setScene);
     const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
 
     const patchCharacter = (id: string, patch: Partial<DramaCharacter>) => {
@@ -42,20 +43,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
         if (!isAiConfigReady(config, config.model)) return message.warning("请先在设置中配置可用的图片模型渠道");
         setBusyIds((current) => ({ ...current, [character.id]: true }));
         try {
-            const prompt = buildCharacterImagePrompt(description, resolveArtStyleBase(artStyle, customArtStyle));
-            const results = await Promise.allSettled(Array.from({ length: CANDIDATE_COUNT }, () => requestGeneration(config, prompt)));
-            const generated = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-            if (!generated.length) {
-                const reason = results.find((result): result is PromiseRejectedResult => result.status === "rejected")?.reason;
-                throw new Error(reason instanceof Error ? reason.message : "立绘生成失败，请检查图片渠道配置后重试");
-            }
-            const candidates = await Promise.all(
-                generated.map(async (image) => {
-                    const uploaded = await uploadImage(image.dataUrl);
-                    return { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
-                }),
-            );
-            patchCharacter(character.id, { candidates });
+            const candidates = await generateCharacterCandidates(project.id, character.id, effectiveConfig, CANDIDATE_COUNT);
             message.success(`「${character.name}」生成了 ${candidates.length} 张立绘，点击按钮分配到视图`);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "立绘生成失败，可重试");
@@ -93,9 +81,16 @@ export function CharactersStep({ project }: { project: DramaProject }) {
         <div className="mx-auto w-full max-w-5xl space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-sm text-stone-500 dark:text-stone-400">
-                    为每个角色生成立绘候选，最多选 4 张分配为正 / 侧 / 背 / 四分之三视图，之后可保存到角色库并作为分镜图参考。画面风格对角色立绘、分镜图与分镜视频共用，切换后重新生成即可生效。
+                    为每个角色生成立绘候选，最多选 4 张分配为正 / 侧 / 背 / 四分之三视图，之后可保存到角色库并作为分镜图参考。场景与画面风格对角色立绘、分镜图与分镜视频共用，切换后重新生成即可生效。
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm text-stone-500 dark:text-stone-400">场景</span>
+                    <Select
+                        className="min-w-36"
+                        value={scene}
+                        options={[{ value: "", label: "不指定" }, ...SCENE_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }))]}
+                        onChange={(value) => setScene(value)}
+                    />
                     <span className="text-sm text-stone-500 dark:text-stone-400">画面风格</span>
                     <Select
                         className="min-w-36"
