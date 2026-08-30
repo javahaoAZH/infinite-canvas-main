@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tigerowo/infinite-canvas/model"
 	"github.com/tigerowo/infinite-canvas/service"
@@ -264,7 +265,7 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 			onFailure()
 		}
 		saveAIProxyLog(logContext, response.StatusCode, string(payload), strings.TrimSpace(string(payload)))
-		Fail(w, readUpstreamAIErrorMessage(payload, response.StatusCode))
+		Fail(w, dashScopeUpstreamErrorMessage(channel, readUpstreamAIErrorMessage(payload, response.StatusCode), "AI 接口请求失败"))
 		return
 	}
 
@@ -423,6 +424,28 @@ func readUpstreamAIErrorMessage(body []byte, statusCode int) string {
 		return fmt.Sprintf("AI 接口请求失败：%d", statusCode)
 	}
 	return "AI 接口请求失败"
+}
+
+// dashScopeUpstreamErrorMessage 百炼上游错误展示规范：空/无效错误（含 {"message":""} 空对象）回退中文描述；
+// 英文原文保持可见并加中文前缀；非百炼渠道原样返回。已有中文描述不重复包前缀。
+func dashScopeUpstreamErrorMessage(channel model.ModelChannel, message string, fallback string) string {
+	message = strings.TrimSpace(message)
+	if message == "" || message == `{"message":""}` {
+		return firstNonEmpty(fallback, "AI 接口请求失败")
+	}
+	if !service.IsDashScopeChannel(channel) || strings.HasPrefix(message, "百炼") || containsChineseCharacter(message) {
+		return message
+	}
+	return "百炼服务返回错误：" + message
+}
+
+func containsChineseCharacter(text string) bool {
+	for _, character := range text {
+		if unicode.Is(unicode.Han, character) {
+			return true
+		}
+	}
+	return false
 }
 
 func redactLargeImages(value *any) {

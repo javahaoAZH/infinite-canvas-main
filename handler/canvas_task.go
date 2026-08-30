@@ -323,7 +323,7 @@ func runCanvasAudioTask(task model.CanvasAudioTask, user model.AuthUser, body []
 	if strings.Contains(mimeType, "json") {
 		audioURL := dashScopeTtsAudioURL(payload)
 		if audioURL == "" {
-			saveFailedCanvasAudioTask(task, "音频接口没有返回音频文件", string(payload))
+			saveFailedCanvasAudioTask(task, firstNonEmpty(dashScopeTTSErrorMessage(payload), "音频接口没有返回音频文件"), string(payload))
 			return
 		}
 		audioData, audioMIMEType, err := downloadCanvasAudioURL(audioURL)
@@ -399,6 +399,26 @@ func dashScopeTtsAudioURL(payload []byte) string {
 		return ""
 	}
 	return strings.TrimSpace(root.Output.Audio.URL)
+}
+
+// dashScopeTTSErrorMessage 百炼 TTS 失败时透出上游真实错误，避免只展示「没有返回音频文件」而吞掉原因
+func dashScopeTTSErrorMessage(payload []byte) string {
+	var root struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Output  struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"output"`
+	}
+	if len(payload) == 0 || json.Unmarshal(payload, &root) != nil {
+		return ""
+	}
+	message := firstNonEmpty(strings.TrimSpace(root.Message), strings.TrimSpace(root.Output.Message))
+	if message == "" || containsChineseCharacter(message) {
+		return message
+	}
+	return "百炼服务返回错误：" + message
 }
 
 func downloadCanvasAudioURL(audioURL string) ([]byte, string, error) {
@@ -572,7 +592,15 @@ func readWrappedTaskError(payload []byte) string {
 	}
 	if root.Error != nil {
 		if errMap, ok := root.Error.(map[string]any); ok {
-			return firstNonEmpty(toStringSafe(errMap["message"]), toStringSafe(errMap["msg"]), toStringSafe(root.Error))
+			message := firstNonEmpty(strings.TrimSpace(toStringSafe(errMap["message"])), strings.TrimSpace(toStringSafe(errMap["msg"])))
+			if message != "" {
+				return message
+			}
+			// message 为空的错误对象一律视为无错误，避免 {"message":""} 空对象被误判为失败
+			if _, hasMessage := errMap["message"]; hasMessage {
+				return ""
+			}
+			return toStringSafe(root.Error)
 		}
 		return toStringSafe(root.Error)
 	}

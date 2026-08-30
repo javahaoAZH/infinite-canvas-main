@@ -130,7 +130,7 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if status >= http.StatusBadRequest {
-		message := readUpstreamAIErrorMessage(payload, status)
+		message := dashScopeUpstreamErrorMessage(channel, readUpstreamAIErrorMessage(payload, status), "视频生成失败，请重试")
 		if credits > 0 {
 			refundVideoCredits(user.ID, modelName, credits, upstreamPath)
 		}
@@ -144,7 +144,7 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 			refundVideoCredits(user.ID, modelName, credits, upstreamPath)
 		}
 		saveAIProxyLog(logContext, status, string(payload), message)
-		Fail(w, message)
+		Fail(w, dashScopeUpstreamErrorMessage(channel, message, "视频生成失败，请重试"))
 		return
 	}
 	parsed := parseVideoTaskPayload(transformed, modelName)
@@ -314,7 +314,7 @@ func pollVideoTaskFromUpstream(task model.VideoTask) (service.VideoTaskPollUpdat
 		return service.VideoTaskPollUpdate{}, err
 	}
 	if status >= http.StatusBadRequest {
-		message := readUpstreamAIErrorMessage(payload, status)
+		message := dashScopeUpstreamErrorMessage(channel, readUpstreamAIErrorMessage(payload, status), "视频生成失败，请重试")
 		saveAIProxyLog(logContext, status, string(payload), strings.TrimSpace(string(payload)))
 		if status == http.StatusTooManyRequests {
 			return service.VideoTaskPollUpdate{Status: task.Status, ErrorDetail: message, ResponseBody: string(payload)}, nil
@@ -331,6 +331,9 @@ func pollVideoTaskFromUpstream(task model.VideoTask) (service.VideoTaskPollUpdat
 			parsed.Error = errMessage
 		}
 		parsed.Status = "failed"
+	}
+	if parsed.Error != "" {
+		parsed.Error = dashScopeUpstreamErrorMessage(channel, parsed.Error, "视频生成失败，请重试")
 	}
 	if parsed.ErrorDetail == "" && len(payload) > 0 && parsed.Error != "" {
 		parsed.ErrorDetail = string(payload)
@@ -483,14 +486,18 @@ func transformDashScopeVideoTaskResponse(payload []byte) ([]byte, bool) {
 	case "running":
 		progress = 50
 	}
-	transformed, err := json.Marshal(map[string]any{
+	result := map[string]any{
 		"id":        taskID,
 		"task_id":   taskID,
 		"status":    status,
 		"progress":  progress,
 		"video_url": videoURL,
-		"error":     map[string]any{"message": errorMessage},
-	})
+	}
+	// 空错误对象会被下游解析误判为非空错误，仅在确有错误信息时嵌入 error 字段
+	if errorMessage != "" {
+		result["error"] = map[string]any{"message": errorMessage}
+	}
+	transformed, err := json.Marshal(result)
 	return transformed, err == nil
 }
 
@@ -534,7 +541,7 @@ func parseVideoTaskPayload(payload []byte, modelName string) parsedVideoTaskPayl
 		Seconds:         firstNonEmpty(readStringPath(data, "seconds"), readStringPath(data, "duration")),
 		Size:            firstNonEmpty(readStringPath(data, "size"), readSizeFromDimensions(data)),
 		VideoURL:        firstNonEmpty(readStringPath(data, "video_url"), readStringPath(data, "url"), readStringPath(data, "remixed_from_video_id"), readStringPath(data, "output_url"), readStringPath(data, "download_url"), findFirstHTTPURL(data)),
-		Error:           firstNonEmpty(readStringPath(data, "error.message"), readStringPath(data, "error")),
+		Error:           readVideoPayloadErrorMessage(data),
 		ErrorDetail:     "",
 	}
 	if result.UpstreamTaskID == result.UpstreamVideoID && strings.HasPrefix(result.UpstreamVideoID, "video_") {
@@ -557,6 +564,25 @@ func parseVideoTaskPayload(payload []byte, modelName string) parsedVideoTaskPayl
 		result.ErrorDetail = string(payload)
 	}
 	return result
+}
+
+// readVideoPayloadErrorMessage 读取载荷中的错误信息：error 对象的 message 为空时一律视为无错误，
+// 避免 {"message":""} 空对象被 toStringSafe 序列化成非空字符串而把成功判成失败
+func readVideoPayloadErrorMessage(data map[string]any) string {
+	if message := readStringPath(data, "error.message"); message != "" {
+		return message
+	}
+	value, exists := data["error"]
+	if !exists || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	if record, ok := value.(map[string]any); ok {
+		return firstNonEmpty(readStringPath(record, "message"), readStringPath(record, "msg"))
+	}
+	return strings.TrimSpace(toStringSafe(value))
 }
 
 func normalizeVideoPayloadMap(value any) map[string]any {

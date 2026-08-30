@@ -85,7 +85,7 @@ func SelectUserLocalModelChannelForModel(userID string, modelName string, channe
 			return model.ModelChannel{}, errors.New("本地渠道配置不完整")
 		}
 		models := userLocalChannelModels(channel.Models)
-		if len(models) > 0 && !userLocalChannelHasModel(models, modelName) {
+		if len(models) > 0 && !userLocalChannelHasModel(models, modelName) && !userLocalDashScopeCompanionModel(channel.Protocol, modelName) {
 			return model.ModelChannel{}, errors.New("本地渠道不支持该模型")
 		}
 		protocol := strings.ToLower(strings.TrimSpace(channel.Protocol))
@@ -128,6 +128,13 @@ func userLocalChannelHasModel(models []string, modelName string) bool {
 		}
 	}
 	return false
+}
+
+// userLocalDashScopeCompanionModel 百炼渠道的伴随模型放行：带参考图编辑由前端固定改用 qwen-image-edit-plus，
+// 该模型不需要用户逐一列入渠道模型白名单，否则会被「本地渠道不支持该模型」拦截
+func userLocalDashScopeCompanionModel(protocol string, modelName string) bool {
+	return strings.EqualFold(strings.TrimSpace(protocol), ModelChannelProtocolDashScope) &&
+		strings.EqualFold(strings.TrimSpace(modelName), DashScopeImageEditModel)
 }
 
 func CurrentUserConfig(ctx context.Context) (UserConfigPayload, error) {

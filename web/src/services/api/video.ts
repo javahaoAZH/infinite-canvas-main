@@ -160,7 +160,7 @@ export async function pollCreatedVideoGenerationTask(config: AiConfig, task: Vid
             if (dashscope && Date.now() > startedAt + DASHSCOPE_VIDEO_MAX_WAIT_MS) throw new VideoRequestError("百炼视频生成超时（20 分钟），请稍后在任务列表中查看结果", task);
             const video = await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce()));
             onPoll?.(video);
-            if (isFailedVideoStatus(video.status)) throw new VideoRequestError(video.error?.message || "视频生成失败", video);
+            if (isFailedVideoStatus(video.status)) throw new VideoRequestError(readableVideoErrorMessage(video.error?.message), video);
             if (typeof video.progress === "number") onProgress?.(video.progress, video);
             if (isCompletedVideoStatus(video.status) || video.video_url || video.url) {
                 completed = video;
@@ -957,6 +957,13 @@ function isCompletedVideoStatus(status?: string) {
 
 function isFailedVideoStatus(status?: string) {
     return ["failed", "fail", "error", "cancelled", "canceled"].includes((status || "").toLowerCase());
+}
+
+// 空串或 {"message":""} 这类无效错误信息绝不直接展示，回退可读的中文描述（上游原始信息保留在 detail 里）
+function readableVideoErrorMessage(message?: string) {
+    const trimmed = (message || "").trim();
+    if (!trimmed || trimmed === `{"message":""}`) return "视频生成失败，请重试";
+    return trimmed;
 }
 
 function videoPayloadErrorMessage(value: unknown): string {

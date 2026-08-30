@@ -92,6 +92,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 ## 阿里云百炼（DashScope）原生渠道（需真实百炼 API Key 人工验证）
 
 - 渠道接入：前端渠道协议下拉新增「阿里云百炼」，默认 Base URL `https://dashscope.aliyuncs.com`；后端仅做路径映射（图像 / TTS → `/api/v1/services/aigc/multimodal-generation/generation`，视频 → `/api/v1/services/aigc/video-generation/video-synthesis`，任务查询 → `/api/v1/tasks/{id}`，文本 → `/compatible-mode/v1/chat/completions`）与 `X-DashScope-Async: enable` 请求头注入，不新增路由与表结构。
-- 建议测试模型：`qwen-image-plus`（图像）、`wan2.6-i2v-flash`（图生视频）、`qwen3-tts-flash`（配音）、`qwen3-max`（文本/剧本）。
+- 建议测试模型：`qwen-image-plus`（图像）、`wan2.6-i2v-flash`（图生视频）、`qwen3-tts-flash`（配音）、`qwen3-max`（文本/剧本）；带参考图编辑由前端固定自动改用 `qwen-image-edit-plus`（无需在渠道模型列表里单独配置）。
 - 前置条件：必须登录后使用（百炼无浏览器直连能力，未登录应提示「百炼渠道不支持浏览器直连，请登录后使用本地后端代理」）；管理后台渠道模型列表拉取不支持百炼，需手工填写模型名。
 - 需重点验证六点：① 文生图与带参考图编辑正常出图，尺寸「宽x高」映射为「宽*高」；② 图生视频需首帧、无首帧时中文报错，首帧自动压缩为 ≤4MB JPEG，轮询间隔 15 秒、最长 20 分钟，完成后临时 OSS 视频链接自动转存本地；③ qwen3-tts 配音正常（默认音色 Cherry），不支持参考音频时中文报错；④ /drama 全流程（剧本 → 分镜图 → 角色四视图 → 图生视频 → 配音）走百炼渠道跑通；⑤ 视频任务入库与刷新后轮询恢复（后端 `output.task_id` 归一化链路）；⑥ 上游报错（额度不足、参数非法）展示中文错误信息。
+- E2E 修复：① 图生视频上游成功不再被 `error: {"message":""}` 空对象误判为失败，创建成功正常返回 task_id（空 message 一律视为无错误）；② 带参考图编辑自动改用 `qwen-image-edit-plus` 且后端模型白名单放行该模型；③ 音色不属于百炼音色集合（如默认 `alloy`）时自动回退 `Cherry`；④ 空/无效错误不再直接展示，回退「视频生成失败，请重试」等中文描述，上游英文错误以「百炼服务返回错误：」前缀展示并保留原文。

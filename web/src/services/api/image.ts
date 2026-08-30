@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import { isMiniMaxChannel, miniMaxModels } from "@/lib/minimax-video";
-import { assertDashScopeProxyAvailable, createDashScopeImageBody, isDashScopeConfig, parseDashScopeImageUrls } from "@/lib/dashscope";
+import { assertDashScopeProxyAvailable, createDashScopeImageBody, DASHSCOPE_IMAGE_EDIT_MODEL, isDashScopeConfig, parseDashScopeImageUrls } from "@/lib/dashscope";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
 import { isMimoChannel, mimoModels } from "@/lib/mimo-tts";
@@ -658,7 +658,9 @@ async function requestDashScopeImageSingle(config: AiConfig, prompt: string, ref
     assertDashScopeProxyAvailable(config);
     const referenceDataUrls = references.length ? await Promise.all(references.map((image) => imageToDataUrl(image))) : [];
     const endpoint = referenceDataUrls.length ? "/images/edits" : "/images/generations";
-    const body = createDashScopeImageBody(config, config.model, withPromptGuard(config, withSystemPrompt(config, prompt)), referenceDataUrls, params.size, params.n);
+    // qwen-image-plus 不支持参考图输入：带参考图编辑固定改用 qwen-image-edit-plus，纯文生图仍用配置的图像模型
+    const model = referenceDataUrls.length ? DASHSCOPE_IMAGE_EDIT_MODEL : config.model;
+    const body = createDashScopeImageBody(config, model, withPromptGuard(config, withSystemPrompt(config, prompt)), referenceDataUrls, params.size, params.n);
     return requestAndParseImages(
         config,
         endpoint,
@@ -1099,7 +1101,9 @@ async function createCanvasImageTaskRequest(config: AiConfig & { seedIndex?: num
     if (isDashScopeConfig(config)) {
         assertDashScopeProxyAvailable(config);
         const referenceDataUrls = references.length ? await Promise.all(references.map((image) => imageToDataUrl(image))) : [];
-        const body = createDashScopeImageBody(config, config.model, withPromptGuard(config, withSystemPrompt(config, prompt)), referenceDataUrls, params.size, 1);
+        // 带参考图编辑固定改用 qwen-image-edit-plus（qwen-image-plus 不支持参考图输入）
+        const model = referenceDataUrls.length ? DASHSCOPE_IMAGE_EDIT_MODEL : config.model;
+        const body = createDashScopeImageBody(config, model, withPromptGuard(config, withSystemPrompt(config, prompt)), referenceDataUrls, params.size, 1);
         return {
             method: "POST",
             headers: jsonHeaders,
