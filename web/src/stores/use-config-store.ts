@@ -67,6 +67,7 @@ export type AiConfig = {
     videoSize: string;
     count: string;
     canvasImageCount: string;
+    agentMaxSteps: number;
     timeout: string;
     apiMode: string;
     streamImages: string;
@@ -140,6 +141,7 @@ export const defaultConfig: AiConfig = {
     videoSize: "1280x720",
     count: "1",
     canvasImageCount: "1",
+    agentMaxSteps: 12,
     timeout: "600",
     apiMode: "images",
     streamImages: "",
@@ -435,6 +437,7 @@ export const useConfigStore = create<ConfigStore>()(
                         videoWatermark: config.videoWatermark || "false",
                         videoCharacterOrientation: config.videoCharacterOrientation === "image" ? "image" : "video",
                         canvasImageCount: config.canvasImageCount || "1",
+                        agentMaxSteps: normalizeAgentMaxSteps(config.agentMaxSteps),
                         imageModels: filterChannelModelsByCapability(localChannels, "image"),
                         videoModels: filterChannelModelsByCapability(localChannels, "video"),
                         textModels: filterChannelModelsByCapability(localChannels, "text"),
@@ -448,6 +451,12 @@ export const useConfigStore = create<ConfigStore>()(
 
 function normalizeModelList(models: string[]) {
     return Array.from(new Set((models || []).map((model) => model.trim()).filter(Boolean)));
+}
+
+function normalizeAgentMaxSteps(value: unknown) {
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isFinite(parsed)) return defaultConfig.agentMaxSteps;
+    return Math.min(50, Math.max(1, parsed));
 }
 
 export function useEffectiveConfig() {

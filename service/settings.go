@@ -52,6 +52,7 @@ func SaveSettings(settings model.Settings) (model.Settings, error) {
 	keepPrivateAPIKeys(&settings, normalizeSettings(saved))
 	keepPrivateAuthSecrets(&settings, normalizeSettings(saved))
 	keepPrivateStorageSecrets(&settings, normalizeSettings(saved))
+	keepPrivateProduction(&settings, normalizeSettings(saved))
 	if err := validateEnabledStorageProviderTypes(settings.Private.Storage.Providers); err != nil {
 		return model.Settings{}, err
 	}
@@ -216,6 +217,7 @@ func normalizePrivateSetting(setting model.PrivateSetting) model.PrivateSetting 
 	setting.PromptSync = normalizePromptSyncSetting(setting.PromptSync)
 	setting.AILog = normalizeAILogSetting(setting.AILog)
 	setting.Storage = normalizePrivateStorageSetting(setting.Storage)
+	setting.Production.FFmpegPath = strings.TrimSpace(setting.Production.FFmpegPath)
 	for i := range setting.Channels {
 		if setting.Channels[i].Protocol == "" {
 			setting.Channels[i].Protocol = "openai"
@@ -262,6 +264,14 @@ func keepPrivateAPIKeys(settings *model.Settings, saved model.Settings) {
 func keepPrivateAuthSecrets(settings *model.Settings, saved model.Settings) {
 	if strings.TrimSpace(settings.Private.Auth.LinuxDo.ClientSecret) == "" {
 		settings.Private.Auth.LinuxDo.ClientSecret = saved.Private.Auth.LinuxDo.ClientSecret
+	}
+}
+
+// keepPrivateProduction 请求未携带 production 配置（如管理后台全量替换私有配置）时，
+// 保留数据库已有的 Production（如 FFmpeg 路径），避免被清空。
+func keepPrivateProduction(settings *model.Settings, saved model.Settings) {
+	if settings.Private.Production == (model.ProductionSetting{}) {
+		settings.Private.Production = saved.Private.Production
 	}
 }
 

@@ -30,6 +30,7 @@ description: 当前后端主要数据表与字段说明
 - `canvas_image_tasks`
 - `canvas_audio_tasks`
 - `canvas_projects`
+- `render_tasks`
 - `user_configs`
 - `storage_objects`
 
@@ -274,6 +275,28 @@ S3/R2 与 WebDAV 共用的媒体文件索引表，不保存画布、素材列表
 
 索引：`idx_canvas_projects_user_deleted_updated (user_id, deleted_at, updated_at)`、`idx_canvas_projects_deleted_at (deleted_at)`
 
+### render_tasks
+
+画布一键成片渲染任务表。任务创建后由后端串行执行（并发上限 1），前端刷新或关闭浏览器不影响后端继续渲染；服务重启后残留的 `preparing`/`rendering` 任务会被置为 `failed`。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | string | 主键，渲染任务 ID |
+| `user_id` | string | 用户 ID，索引 |
+| `status` | string | 状态：`queued`、`preparing`、`rendering`、`completed`、`failed` |
+| `progress` | number | 渲染进度，0-100 |
+| `timeline_json` | text | 时间轴描述 JSON：`fps`、`width`、`height`、`srt`、`burnSubtitle` 和片段列表（`kind`：`video`、`image`、`audio`；`source`：存储 key `server:<id>`、文件 ID 或 http(s) 外链；`durationMs`） |
+| `output_file_id` | string | 成片输出文件 ID，注册进文件体系后经 `/api/files/:id/content` 访问 |
+| `seconds` | string | 成片秒数 |
+| `size` | string | 成片尺寸 |
+| `error` | text | 失败摘要 |
+| `error_detail` | text | 失败详情 |
+| `created_at` | string | 创建时间 |
+| `updated_at` | string | 更新时间，索引 |
+| `started_at` | string | 开始时间 |
+| `completed_at` | string | 完成时间 |
+
+索引：`idx_render_tasks_status_created_at (status, created_at)`
 
 ### settings
 
@@ -331,6 +354,7 @@ S3/R2 与 WebDAV 共用的媒体文件索引表，不保存画布、素材列表
 | `channels` | object[] | 模型渠道配置列表 |
 | `promptSync` | object | GitHub 远程提示词定时同步配置 |
 | `auth` | object | 私有登录配置 |
+| `production` | object | 本地合成（一键成片）配置 |
 
 `channels` 每项字段：
 
@@ -351,6 +375,12 @@ S3/R2 与 WebDAV 共用的媒体文件索引表，不保存画布、素材列表
 | --- | --- | --- |
 | `enabled` | bool | 是否开启定时同步，默认开启 |
 | `cron` | string | Cron 表达式，默认每天 0 点 |
+
+`production` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ffmpegPath` | string | FFmpeg 可执行文件路径。探测顺序：该配置 → 环境变量 `FFMPEG_PATH` → 系统 PATH 中的 `ffmpeg` |
 
 `auth.linuxDo` 当前字段：
 

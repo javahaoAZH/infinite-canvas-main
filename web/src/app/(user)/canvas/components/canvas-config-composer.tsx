@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
-import { Button, Image } from "antd";
+import { Button, Image, InputNumber } from "antd";
 import { FileText, Image as ImageIcon, Music2, Video, X } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { useConfigStore } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { NodeGenerationInput } from "./canvas-node-generation";
 
@@ -28,6 +29,8 @@ export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
 export function CanvasConfigComposer({ value, inputs, onChange, onClose }: CanvasConfigComposerProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const agentMaxSteps = useConfigStore((state) => state.config.agentMaxSteps);
+    const updateConfig = useConfigStore((state) => state.updateConfig);
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
     const [mention, setMention] = useState<MentionState | null>(null);
@@ -201,6 +204,20 @@ export function CanvasConfigComposer({ value, inputs, onChange, onClose }: Canva
                     onBlur={() => window.setTimeout(closeMention, 120)}
                 />
                 {mention && candidates.length ? <MentionMenu inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-baseline gap-2">
+                    <div className="shrink-0 text-xs font-semibold">助手最大步数</div>
+                    <div className="truncate text-[11px] opacity-55">画布助手单轮最多执行的操作步数（1~50）</div>
+                </div>
+                <InputNumber
+                    size="small"
+                    min={1}
+                    max={50}
+                    precision={0}
+                    value={agentMaxSteps}
+                    onChange={(next) => updateConfig("agentMaxSteps", typeof next === "number" && Number.isFinite(next) ? Math.min(50, Math.max(1, Math.round(next))) : 12)}
+                />
             </div>
             {imagePreview ? <Image src={imagePreview} alt="引用图片预览" style={{ display: "none" }} preview={{ visible: true, src: imagePreview, onVisibleChange: (visible) => !visible && setImagePreview(null) }} /> : null}
         </div>

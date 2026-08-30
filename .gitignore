@@ -7,6 +7,15 @@ data/
 /director/
 *.log
 /InfiniteCanvas.exe
+/InfiniteCanvas.exe~
+/InfiniteCanvas.exe.WebView2/
 *.tsbuildinfo
 .DS_Store
 .idea
+/e2e-*.png
+/check_http_verify.js
+/check_proc.js
+/health_check_temp.ps1
+/find_port_owner.ps1
+/test3_director.ps1
+/web/drama-prompt-check.ts

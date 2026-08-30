@@ -246,6 +246,54 @@ func UploadStorageObjectWithProvider(ctx context.Context, filename string, conte
 	return UploadedStorageObject{ID: objectID, URL: url, StorageKey: "server:" + objectID, Bytes: int64(len(data)), MimeType: contentType}, nil
 }
 
+// UploadStorageObjectStream 以流式方式上传大文件（如渲染成片），避免整体读入内存。
+// 与 UploadStorageObject 平行，只使用服务端全局存储，不走用户自定义 Provider。
+func UploadStorageObjectStream(ctx context.Context, filename string, contentType string, stream io.Reader, size int64) (UploadedStorageObject, error) {
+	if size < 0 || stream == nil {
+		return UploadedStorageObject{}, errors.New("文件大小无效")
+	}
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return UploadedStorageObject{}, err
+	}
+	storage := normalizePrivateStorageSetting(settings.Private.Storage)
+	if !canUseGlobalStorage(ctx, storage) {
+		return UploadedStorageObject{}, errors.New("服务端对象存储未启用")
+	}
+	provider, err := selectStorageProvider(storage)
+	if err != nil {
+		return UploadedStorageObject{}, errors.New("服务端对象存储未启用")
+	}
+	objectID := uuid.NewString()
+	ext := path.Ext(filename)
+	if ext == "" {
+		ext = extensionForContentType(contentType)
+	}
+	userID := "anonymous"
+	if user, ok := UserFromContext(ctx); ok && user.ID != "" {
+		userID = user.ID
+	}
+	nowTime := time.Now()
+	objectKey := strings.Trim(strings.Trim(provider.PathPrefix, "/")+"/"+userID+"/"+nowTime.Format("2006/01/02")+"/"+objectID+ext, "/")
+	hasher := sha256.New()
+	if err := putStorageObjectStream(provider, objectKey, contentType, io.TeeReader(stream, hasher), size); err != nil {
+		return UploadedStorageObject{}, err
+	}
+	publicURL := objectURL(provider, objectKey)
+	object := model.StorageObject{
+		ID: objectID, ProviderID: provider.ID, Bucket: provider.Bucket, ObjectKey: objectKey, PublicURL: publicURL,
+		MimeType: contentType, Bytes: size, SHA256: hex.EncodeToString(hasher.Sum(nil)), CreatedBy: userID, CreatedAt: now(),
+	}
+	if _, err := repository.SaveStorageObject(object); err != nil {
+		return UploadedStorageObject{}, err
+	}
+	url := "/api/files/" + objectID + "/content"
+	if publicURL != "" {
+		url = publicURL
+	}
+	return UploadedStorageObject{ID: objectID, URL: url, StorageKey: "server:" + objectID, Bytes: size, MimeType: contentType}, nil
+}
+
 // RegisterDirectStorageObject 登记浏览器已直传至用户 WebDAV 的对象。
 func RegisterDirectStorageObject(ctx context.Context, input DirectStorageObjectInput) (UploadedStorageObject, error) {
 	user, ok := UserFromContext(ctx)
@@ -623,6 +671,43 @@ func putStorageObject(provider model.StorageProvider, objectKey string, contentT
 		return putS3Object(provider, objectKey, contentType, data)
 	case model.StorageProviderTypeWebDAV:
 		return putWebDAVObject(provider, objectKey, data)
+	default:
+		return errors.New("存储类型不支持")
+	}
+}
+
+// putStorageObjectStream 流式上传对象，避免把整个文件读入内存。
+func putStorageObjectStream(provider model.StorageProvider, objectKey string, contentType string, stream io.Reader, size int64) error {
+	switch provider.Type {
+	case model.StorageProviderTypeS3:
+		request, err := newS3Request(http.MethodPut, provider, objectKey, stream, size)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Content-Type", contentType)
+		response, err := SafeProxyHTTPClient().Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			return fmt.Errorf("对象存储上传失败: %s %s", response.Status, string(body))
+		}
+		return nil
+	case model.StorageProviderTypeWebDAV:
+		client, err := newWebDAVClient(provider)
+		if err != nil {
+			return err
+		}
+		remotePath, err := cleanStoragePath(objectKey)
+		if err != nil {
+			return err
+		}
+		if err := client.MkdirAll(path.Dir(remotePath), 0o755); err != nil {
+			return err
+		}
+		return client.WriteStream(remotePath, stream, 0o644)
 	default:
 		return errors.New("存储类型不支持")
 	}

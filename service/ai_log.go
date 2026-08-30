@@ -2,7 +2,9 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -555,4 +557,130 @@ func truncateLogText(value string, limit int) string {
 		return value
 	}
 	return value[:limit] + "\n... [truncated]"
+}
+
+type UserCostSummary struct {
+	Days         int                    `json:"days"`
+	Calls        int                    `json:"calls"`
+	SuccessCalls int                    `json:"successCalls"`
+	FailedCalls  int                    `json:"failedCalls"`
+	Credits      int                    `json:"credits"`
+	DurationMs   int64                  `json:"durationMs"`
+	Models       []UserCostModelSummary `json:"models"`
+	Daily        []UserCostDailySummary `json:"daily"`
+}
+
+type UserCostModelSummary struct {
+	Model       string `json:"model"`
+	Calls       int    `json:"calls"`
+	FailedCalls int    `json:"failedCalls"`
+	Credits     int    `json:"credits"`
+	LastCallAt  string `json:"lastCallAt"`
+}
+
+type UserCostDailySummary struct {
+	Date    string `json:"date"`
+	Calls   int    `json:"calls"`
+	Credits int    `json:"credits"`
+}
+
+// SummarizeUserCosts 聚合指定用户最近 N 天的 AI 调用成本（按日志文件名日期过滤）。
+func SummarizeUserCosts(userID string, days int) (UserCostSummary, error) {
+	userID = strings.TrimSpace(userID)
+	if days <= 0 {
+		days = 30
+	}
+	if days > 365 {
+		days = 365
+	}
+	summary := UserCostSummary{Days: days, Models: []UserCostModelSummary{}, Daily: []UserCostDailySummary{}}
+	if userID == "" {
+		return summary, nil
+	}
+	files, err := aiLogFiles()
+	if err != nil {
+		return summary, err
+	}
+	cutoff := startOfDay(time.Now()).AddDate(0, 0, -(days - 1))
+	modelStats := map[string]*UserCostModelSummary{}
+	dailyStats := map[string]*UserCostDailySummary{}
+	for _, file := range files {
+		fileDate, ok := aiLogFileDate(file)
+		if !ok || fileDate.Before(cutoff) {
+			continue
+		}
+		date := fileDate.Format("2006-01-02")
+		items, err := readAICallLogFile(file)
+		if err != nil {
+			log.Printf("read ai call log file failed file=%s err=%v", file, err)
+			continue
+		}
+		for _, item := range items {
+			if item.UserID != userID {
+				continue
+			}
+			failed := aiCallLogFailed(item)
+			summary.Calls++
+			if failed {
+				summary.FailedCalls++
+			} else {
+				summary.SuccessCalls++
+			}
+			summary.Credits += item.Credits
+			summary.DurationMs += item.DurationMs
+			model := strings.TrimSpace(item.Model)
+			if model == "" {
+				model = "unknown"
+			}
+			modelStat, ok := modelStats[model]
+			if !ok {
+				modelStat = &UserCostModelSummary{Model: model}
+				modelStats[model] = modelStat
+			}
+			modelStat.Calls++
+			if failed {
+				modelStat.FailedCalls++
+			}
+			modelStat.Credits += item.Credits
+			if item.CreatedAt > modelStat.LastCallAt {
+				modelStat.LastCallAt = item.CreatedAt
+			}
+			dailyStat, ok := dailyStats[date]
+			if !ok {
+				dailyStat = &UserCostDailySummary{Date: date}
+				dailyStats[date] = dailyStat
+			}
+			dailyStat.Calls++
+			dailyStat.Credits += item.Credits
+		}
+	}
+	for _, stat := range modelStats {
+		summary.Models = append(summary.Models, *stat)
+	}
+	sort.Slice(summary.Models, func(i, j int) bool {
+		if summary.Models[i].Credits != summary.Models[j].Credits {
+			return summary.Models[i].Credits > summary.Models[j].Credits
+		}
+		return summary.Models[i].Model < summary.Models[j].Model
+	})
+	for _, stat := range dailyStats {
+		summary.Daily = append(summary.Daily, *stat)
+	}
+	sort.Slice(summary.Daily, func(i, j int) bool {
+		return summary.Daily[i].Date < summary.Daily[j].Date
+	})
+	return summary, nil
+}
+
+// CurrentUserCostSummary 返回当前登录用户的 AI 调用成本汇总。
+func CurrentUserCostSummary(ctx context.Context, days int) (UserCostSummary, error) {
+	user, ok := UserFromContext(ctx)
+	if !ok || user.ID == "" {
+		return UserCostSummary{}, errors.New("请先登录")
+	}
+	return SummarizeUserCosts(user.ID, days)
+}
+
+func aiCallLogFailed(item model.AICallLog) bool {
+	return item.Status >= 400 || (item.Status < 200 && strings.TrimSpace(item.Error) != "")
 }

@@ -9,3 +9,7 @@ description: 当前项目后续值得处理的事项
 
 - 桌面 exe 依赖系统已安装 WebView2 Runtime，后续可评估随包提供 Evergreen Bootstrapper 或在缺运行时给出下载引导。
 - 桌面构建流程（前端导出 → 复制到 `webui/out` → `go build -tags desktop`）目前是手工三步，后续可整理为单一构建脚本。
+- 成片字幕烧录默认使用 Microsoft YaHei 字体，Docker/Linux 部署环境若无该字体会回退默认字体导致中文缺字形，后续可考虑随镜像内置中文字体或支持配置 `fontdir`/字体名。
+- 剪映草稿导出当前按公开资料常见格式生成（`draft_content.json` version `360001`），不同剪映版本的草稿格式兼容性还需持续实测跟进。
+- AI 漫剧生产线（/drama）的项目数据目前仅存浏览器本地（localforage），登录后云同步漫剧项目为后续待办。
+- `local_indexeddb` 本地存储模式下，画布本地上传的素材无法参与一键成片（弹窗内已禁用并提示）；成片素材需服务端存储，后续考虑支持本地素材直传后端临时目录参与合成。

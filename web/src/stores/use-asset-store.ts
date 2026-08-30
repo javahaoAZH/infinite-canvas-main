@@ -9,12 +9,32 @@ import { cleanupUnusedImages, resolveImageUrl, uploadImage } from "@/services/im
 import { cleanupUnusedMedia, resolveMediaUrl } from "@/services/file-storage";
 import { fetchUserAssetData, syncUserAssetData } from "@/services/api/user-config";
 
-export type AssetKind = "text" | "image" | "video" | "audio";
+export type AssetKind = "text" | "image" | "video" | "audio" | "character";
 export type TextAsset = AssetBase<"text"> & { data: { content: string } };
 export type ImageAsset = AssetBase<"image"> & { data: { dataUrl: string; storageKey?: string; width: number; height: number; bytes: number; mimeType: string } };
 export type VideoAsset = AssetBase<"video"> & { data: { url: string; storageKey?: string; width: number; height: number; bytes: number; mimeType: string } };
 export type AudioAsset = AssetBase<"audio"> & { data: { url: string; storageKey?: string; bytes?: number; mimeType: string; durationMs?: number } };
-export type Asset = TextAsset | ImageAsset | VideoAsset | AudioAsset;
+export type CharacterAsset = AssetBase<"character"> & { data: { storageKey?: string } };
+export type Asset = TextAsset | ImageAsset | VideoAsset | AudioAsset | CharacterAsset;
+
+// 角色资产约定：沿用现有 Asset 结构，角色信息保存在 metadata.character，tags 含 "character"
+export type CharacterViewKind = "front" | "side" | "back" | "threeQuarter";
+export type CharacterViewImage = { url: string; storageKey?: string };
+export type CharacterViewMap = Partial<Record<CharacterViewKind, CharacterViewImage>>;
+export type CharacterInfo = {
+    name: string;
+    views: CharacterViewMap;
+    description?: string;
+    voicePreset?: string;
+};
+
+export const CHARACTER_VIEW_ORDER: CharacterViewKind[] = ["front", "side", "back", "threeQuarter"];
+export const CHARACTER_VIEW_LABELS: Record<CharacterViewKind, string> = {
+    front: "正面",
+    side: "侧面",
+    back: "背面",
+    threeQuarter: "四分之三",
+};
 
 type AssetBase<T extends AssetKind> = {
     id: string;
@@ -57,6 +77,20 @@ const assetStorage: PersistStorage<AssetStore> = {
             parsed.state.assets.map(async (asset) => {
                 if (asset.kind === "video" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(asset.data.storageKey, asset.data.url) } };
                 if (asset.kind === "audio" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(asset.data.storageKey, asset.data.url) } };
+                if (asset.kind === "character") {
+                    const info = getCharacterInfo(asset);
+                    if (!info) return asset;
+                    const views: CharacterViewMap = {};
+                    await Promise.all(
+                        CHARACTER_VIEW_ORDER.map(async (viewKey) => {
+                            const view = info.views[viewKey];
+                            if (!view) return;
+                            views[viewKey] = view.storageKey ? { ...view, url: await resolveImageUrl(view.storageKey, view.url) } : view;
+                        }),
+                    );
+                    const coverUrl = asset.coverUrl.startsWith("blob:") && views.front?.storageKey ? await resolveImageUrl(views.front.storageKey, asset.coverUrl) : asset.coverUrl;
+                    return { ...asset, coverUrl, metadata: { ...(asset.metadata || {}), character: { ...info, views } } };
+                }
                 if (asset.kind !== "image") return asset;
                 if (asset.data.storageKey)
                     return {
@@ -97,14 +131,16 @@ export const useAssetStore = create<AssetStore>()(
                     const deletedAsset = state.assets.find((asset) => asset.id === id);
                     const assets = state.assets.filter((asset) => asset.id !== id);
 
-                    if (deletedAsset && deletedAsset.kind !== "text" && deletedAsset.data.storageKey) {
-                        const key = deletedAsset.data.storageKey;
+                    if (deletedAsset && deletedAsset.kind !== "text") {
+                        // 待清理的 key：资产自身 storageKey + 角色各视图的 storageKey
+                        const keysToRemove = collectAssetStorageKeys(deletedAsset);
                         window.setTimeout(async () => {
+                            if (!keysToRemove.length) return;
                             const { useCanvasStore } = await import("@/app/(user)/canvas/stores/use-canvas-store");
                             const usedKeys = new Set<string>();
-                            // 收集其余资产的 storageKey
+                            // 收集其余资产的 storageKey（含角色视图）
                             assets.forEach((a) => {
-                                if (a.kind !== "text" && a.data.storageKey) usedKeys.add(a.data.storageKey);
+                                collectAssetStorageKeys(a).forEach((k) => usedKeys.add(k));
                             });
                             // 收集画布中引用的 storageKey
                             const projects = useCanvasStore.getState().projects;
@@ -154,8 +190,9 @@ export const useAssetStore = create<AssetStore>()(
                                 console.error("Error iterating video_generation_logs", e);
                             }
 
-                            // 若全站没有其他地方再引用此 storageKey，则执行真正的物理删除
-                            if (!usedKeys.has(key)) {
+                            // 若全站没有其他地方再引用这些 storageKey，则执行真正的物理删除
+                            for (const key of keysToRemove) {
+                                if (usedKeys.has(key)) continue;
                                 if (key.startsWith("image:") || key.startsWith("server:")) {
                                     const { deleteStoredImages } = await import("@/services/image-storage");
                                     await deleteStoredImages([key]);
@@ -251,12 +288,97 @@ export const useAssetStore = create<AssetStore>()(
     ),
 );
 
+// 收集单个资产的 storageKey：资产自身 + 角色各视图（metadata.character.views[*].storageKey）
+export function collectAssetStorageKeys(asset: Asset): string[] {
+    const keys: string[] = [];
+    if (asset.kind !== "text" && asset.data.storageKey) keys.push(asset.data.storageKey);
+    if (asset.kind === "character") {
+        const info = getCharacterInfo(asset);
+        if (info) {
+            CHARACTER_VIEW_ORDER.forEach((viewKey) => {
+                const storageKey = info.views[viewKey]?.storageKey;
+                if (storageKey) keys.push(storageKey);
+            });
+        }
+    }
+    return keys;
+}
+
 function scheduleAssetSync(get: () => AssetStore) {
     if (isHydratingAccountAssets || !activeAssetSyncToken || !accountAssetSyncEnabled || typeof window === "undefined") return;
     if (syncTimer) window.clearTimeout(syncTimer);
     syncTimer = window.setTimeout(() => {
         void get().syncAccountAssets(activeAssetSyncToken).catch(() => {});
     }, 600);
+}
+
+// 类型安全读取角色信息，容忍 metadata 缺失或旧数据中 views 为纯 URL 字符串的情况
+export function getCharacterInfo(asset: Asset): CharacterInfo | null {
+    if (asset.kind !== "character") return null;
+    const raw = (asset.metadata?.character && typeof asset.metadata.character === "object" ? asset.metadata.character : {}) as Record<string, unknown>;
+    const rawViews = (raw.views && typeof raw.views === "object" ? raw.views : {}) as Record<string, unknown>;
+    const views: CharacterViewMap = {};
+    CHARACTER_VIEW_ORDER.forEach((viewKey) => {
+        const value = rawViews[viewKey];
+        if (typeof value === "string" && value.trim()) {
+            views[viewKey] = { url: value.trim() };
+        } else if (value && typeof value === "object" && typeof (value as CharacterViewImage).url === "string" && (value as CharacterViewImage).url.trim()) {
+            const entry = value as CharacterViewImage;
+            views[viewKey] = entry.storageKey ? { url: entry.url.trim(), storageKey: entry.storageKey } : { url: entry.url.trim() };
+        }
+    });
+    const info: CharacterInfo = {
+        name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : asset.title,
+        views,
+    };
+    if (typeof raw.description === "string" && raw.description.trim()) info.description = raw.description;
+    if (typeof raw.voicePreset === "string" && raw.voicePreset.trim()) info.voicePreset = raw.voicePreset;
+    return info;
+}
+
+// 获取角色用于插入画布/展示的正面视图（缺正面图时退回任意视图或封面）
+export function getCharacterCoverView(asset: CharacterAsset): CharacterViewImage | null {
+    const info = getCharacterInfo(asset);
+    if (!info) return asset.coverUrl ? { url: asset.coverUrl } : null;
+    const fallback = CHARACTER_VIEW_ORDER.map((viewKey) => info.views[viewKey]).find(Boolean);
+    return info.views.front || fallback || (asset.coverUrl ? { url: asset.coverUrl } : null);
+}
+
+type AddCharacterAssetParams = {
+    name: string;
+    views?: CharacterViewMap;
+    description?: string;
+    voicePreset?: string;
+    tags?: string[];
+    source?: string;
+    coverUrl?: string;
+};
+
+// 新增角色资产的便捷入口，自动写入 metadata.character、"character" 标签与封面（默认取正面视图）
+export function addCharacterAsset(params: AddCharacterAssetParams): string {
+    const info: CharacterInfo = { name: params.name.trim() || "未命名角色", views: params.views || {} };
+    if (params.description?.trim()) info.description = params.description.trim();
+    if (params.voicePreset?.trim()) info.voicePreset = params.voicePreset.trim();
+    const tags = Array.from(new Set(["character", ...(params.tags || [])]));
+    return useAssetStore.getState().addAsset({
+        kind: "character",
+        title: info.name,
+        coverUrl: params.coverUrl || info.views.front?.url || "",
+        tags,
+        source: params.source,
+        data: {},
+        metadata: { character: info },
+    });
+}
+
+// 更新角色名称 / 描述 / 视图等角色信息（同步标题与封面）
+export function updateCharacterInfo(id: string, patch: Partial<CharacterInfo>) {
+    const asset = useAssetStore.getState().assets.find((item) => item.id === id);
+    if (!asset || asset.kind !== "character") return;
+    const current = getCharacterInfo(asset) || { name: asset.title, views: {} };
+    const next: CharacterInfo = { ...current, ...patch, views: patch.views || current.views };
+    const coverUrl = next.views.front?.url || asset.coverUrl;
+    useAssetStore.getState().updateAsset(id, { title: next.name, coverUrl, metadata: { ...(asset.metadata || {}), character: next } });
 }
 
 export function mergeAssets(remoteAssets: Asset[], localAssets: Asset[]) {

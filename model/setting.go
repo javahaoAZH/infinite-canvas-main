@@ -96,6 +96,12 @@ type PrivateSetting struct {
 	AILog      AILogSetting          `json:"aiLog"`
 	Auth       PrivateAuthSetting    `json:"auth"`
 	Storage    PrivateStorageSetting `json:"storage"`
+	Production ProductionSetting     `json:"production"`
+}
+
+// ProductionSetting 本地合成（一键成片）配置。
+type ProductionSetting struct {
+	FFmpegPath string `json:"ffmpegPath"`
 }
 
 type AILogSetting struct {

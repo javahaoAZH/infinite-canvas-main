@@ -1,12 +1,13 @@
 "use client";
 
-import { App, Button, Form, Input, Modal, Segmented, Select, Switch } from "antd";
+import { App, Button, Form, Input, Modal, Segmented, Select, Switch, Typography } from "antd";
 import { useEffect, useState } from "react";
 
 import { ChannelModelSelectorModal } from "@/components/channel-model-selector-modal";
 import { GrokTtsVoiceSelect } from "@/components/grok-tts-voice-select";
 import { ModelPicker } from "@/components/model-picker";
 import { fetchImageModels } from "@/services/api/image";
+import { getRenderFFmpegStatus, saveRenderFFmpegPath, type RenderFFmpegStatus } from "@/services/api/render";
 import { fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
 import { clearStorageConfigCache as clearFileStorageCache } from "@/services/file-storage";
 import { clearStorageConfigCache as clearImageStorageCache, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, loadStorageConfig, loadUserS3StorageProvider, loadUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider, type UserStorageProvider } from "@/services/image-storage";
@@ -48,6 +49,10 @@ export function AppConfigModal() {
     const [measuringStorageType, setMeasuringStorageType] = useState<"s3" | "webdav" | null>(null);
     const [storageUsageText, setStorageUsageText] = useState("");
     const [webDAVStorageUsageText, setWebDAVStorageUsageText] = useState("");
+    const [ffmpegPathInput, setFfmpegPathInput] = useState("");
+    const [ffmpegStatus, setFfmpegStatus] = useState<RenderFFmpegStatus | null>(null);
+    const [loadingFFmpegStatus, setLoadingFFmpegStatus] = useState(false);
+    const [savingFFmpegPath, setSavingFFmpegPath] = useState(false);
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
@@ -60,6 +65,7 @@ export function AppConfigModal() {
     const effectiveConfig = useEffectiveConfig();
     const modelChannel = publicSettings?.modelChannel;
     const isLoggedIn = Boolean(token && user);
+    const isAdmin = user?.role === "admin";
     const canUseRemoteChannel = isLoggedIn && (user?.role === "admin" || modelChannel?.allowUserRemoteChannel === true);
     const allowCustomChannel = isLoggedIn && modelChannel?.allowCustomChannel === true;
     const effectiveMode = canUseRemoteChannel ? (allowCustomChannel ? config.channelMode : "remote") : "local";
@@ -121,6 +127,49 @@ export function AppConfigModal() {
             canceled = true;
         };
     }, [isConfigOpen]);
+
+    useEffect(() => {
+        if (!isConfigOpen || !token) return;
+        let canceled = false;
+        setLoadingFFmpegStatus(true);
+        void getRenderFFmpegStatus(token)
+            .then((status) => {
+                if (canceled) return;
+                setFfmpegStatus(status);
+                if (status.source === "settings") setFfmpegPathInput(status.path);
+            })
+            .catch(() => {
+                if (!canceled) setFfmpegStatus(null);
+            })
+            .finally(() => {
+                if (!canceled) setLoadingFFmpegStatus(false);
+            });
+        return () => {
+            canceled = true;
+        };
+    }, [isConfigOpen, token]);
+
+    const saveFFmpegConfig = async () => {
+        if (!token) {
+            message.warning("请先登录后再保存 FFmpeg 配置");
+            return;
+        }
+        if (!isAdmin) {
+            message.warning("FFmpeg 全局路径仅管理员可配置，请联系管理员处理");
+            return;
+        }
+        setSavingFFmpegPath(true);
+        try {
+            await saveRenderFFmpegPath(token, ffmpegPathInput.trim());
+            const status = await getRenderFFmpegStatus(token);
+            setFfmpegStatus(status);
+            message.success("FFmpeg 配置已保存");
+        } catch (error) {
+            message.error(error instanceof Error ? "保存 FFmpeg 配置失败：" + error.message : "保存 FFmpeg 配置失败");
+        } finally {
+            setSavingFFmpegPath(false);
+        }
+    };
 
     const finishConfig = async () => {
         const localIncomplete = effectiveMode === "local" && normalizeLocalChannels(config).some((channel) => !channel.baseUrl.trim() || !channel.apiKey.trim());
@@ -511,6 +560,51 @@ export function AppConfigModal() {
                             </section>
                         </>
                     ) : null}
+                    <section className="mb-5 mt-4 rounded-xl border border-stone-200 bg-stone-50/70 p-3 dark:border-stone-800 dark:bg-stone-900/50">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <div className="text-sm font-medium">本地合成 (FFmpeg)</div>
+                                <div className="mt-1 text-xs text-stone-500">
+                                    {isAdmin ? "一键成片依赖本机 FFmpeg，路径留空时自动探测系统 PATH。" : "一键成片依赖服务端 FFmpeg，全局路径仅管理员可配置。"}
+                                </div>
+                            </div>
+                            {isAdmin ? (
+                                <Button size="small" loading={savingFFmpegPath} disabled={!token} onClick={() => void saveFFmpegConfig()}>
+                                    保存
+                                </Button>
+                            ) : null}
+                        </div>
+                        <div className="mt-3">
+                            <Input
+                                value={ffmpegPathInput}
+                                disabled={!isAdmin}
+                                placeholder={isAdmin ? "FFmpeg 可执行文件路径，留空自动探测" : "全局 FFmpeg 路径由管理员维护"}
+                                onChange={(event) => setFfmpegPathInput(event.target.value)}
+                            />
+                        </div>
+                        <div className="mt-2 text-xs leading-5">
+                            {!token ? (
+                                <span className="text-stone-500">请先登录后检测和保存 FFmpeg 配置。</span>
+                            ) : loadingFFmpegStatus ? (
+                                <span className="text-stone-500">正在检测 FFmpeg…</span>
+                            ) : ffmpegStatus?.available ? (
+                                <span className="text-green-600 dark:text-green-400">
+                                    已检测到 FFmpeg：{ffmpegStatus.version}（{ffmpegStatus.path}）
+                                </span>
+                            ) : (
+                                <span className="text-orange-600 dark:text-orange-400">
+                                    {ffmpegStatus?.reason || "未检测到 FFmpeg，请安装或指定路径。"}{" "}
+                                    {isAdmin ? (
+                                        <Typography.Link href={ffmpegStatus?.downloadUrl || "https://www.ffmpeg.org/download.html"} target="_blank">
+                                            前往下载
+                                        </Typography.Link>
+                                    ) : (
+                                        "请联系管理员配置。"
+                                    )}
+                                </span>
+                            )}
+                        </div>
+                    </section>
                     {(!isMimoTtsModel(config.audioModel) || isMimoPresetTtsModel(config.audioModel) || isMimoVoiceCloneModel(config.audioModel)) && !glmTts && !grokTts ? (
                         <Form.Item label="默认音频指令" className="mb-4">
                             <Input.TextArea rows={2} value={config.audioInstructions} placeholder="例如：自然、温暖、适合旁白。" onChange={(event) => updateConfig("audioInstructions", event.target.value)} />

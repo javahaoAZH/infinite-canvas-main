@@ -20,8 +20,14 @@ import {
     type CanvasAgentToolResult,
 } from "./canvas-agent-tools";
 
-const MAX_AGENT_STEPS = 12;
+const DEFAULT_MAX_AGENT_STEPS = 12;
 const MAX_PROTOCOL_MESSAGES = 120;
+
+function resolveMaxAgentSteps(config: AiConfig) {
+    const value = Number.parseInt(String(config.agentMaxSteps), 10);
+    if (!Number.isFinite(value)) return DEFAULT_MAX_AGENT_STEPS;
+    return Math.min(50, Math.max(1, value));
+}
 
 function trimProtocolMessages(messages: CanvasAgentProtocolMessage[]) {
     const trimmed = messages.slice(-MAX_PROTOCOL_MESSAGES);
@@ -67,12 +73,13 @@ export async function runCanvasAgent(input: RunCanvasAgentInput): Promise<RunCan
     let state = input.initialState;
     let allowTools = true;
     let hasExecutedActions = false;
+    const maxSteps = resolveMaxAgentSteps(input.config);
     let protocolMessages: CanvasAgentProtocolMessage[] = trimProtocolMessages([
         ...input.protocolMessages,
         { role: "user" as const, content: buildUserContent(input.userText, input.references, input.config.textModel || input.config.model) },
     ]);
 
-    for (let step = 0; step < MAX_AGENT_STEPS; step++) {
+    for (let step = 0; step < maxSteps; step++) {
         throwIfAborted(input.signal);
         input.onEvent?.({ status: "thinking", label: step ? "正在根据画布结果继续" : "正在理解画布和创作目标" });
         const context = input.getContext(state);
@@ -136,7 +143,7 @@ export async function runCanvasAgent(input: RunCanvasAgentInput): Promise<RunCan
         input.onCheckpoint?.({ state, protocolMessages: persistCanvasAgentProtocolMessages(protocolMessages) });
     }
 
-    const reply = "本轮已达到安全操作步数上限，当前已完成的节点和任务都已保存。你可以让我继续下一步。";
+    const reply = `本轮已达到安全操作步数上限（${maxSteps} 步），当前已完成的节点和任务都已保存。你可以让我继续下一步。`;
     protocolMessages = trimProtocolMessages([...protocolMessages, { role: "assistant" as const, content: reply }]);
     return { reply, state, protocolMessages: persistCanvasAgentProtocolMessages(protocolMessages) };
 }

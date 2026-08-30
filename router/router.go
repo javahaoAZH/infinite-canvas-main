@@ -75,6 +75,17 @@ func New() *gin.Engine {
 		handler.DeleteUserVideoTask(c.Writer, c.Request, c.Param("id"))
 	})
 	v1.POST("/media/references", gin.WrapF(handler.UploadReferenceMedia))
+	v1.GET("/render/ffmpeg-status", gin.WrapF(handler.RenderFFmpegStatus))
+	v1.POST("/subtitles/from-dialogue", gin.WrapF(handler.SubtitlesFromDialogue))
+	v1.POST("/render/tasks", gin.WrapF(handler.CreateRenderTaskHandler))
+	v1.POST("/render/jianying-draft", gin.WrapF(handler.ExportJianyingDraft))
+	v1.GET("/render/tasks", gin.WrapF(handler.UserRenderTasks))
+	v1.GET("/render/tasks/:id", func(c *gin.Context) {
+		handler.GetUserRenderTask(c.Writer, c.Request, c.Param("id"))
+	})
+	v1.DELETE("/render/tasks/:id", func(c *gin.Context) {
+		handler.DeleteUserRenderTask(c.Writer, c.Request, c.Param("id"))
+	})
 	v1.GET("/videos/:id", func(c *gin.Context) {
 		handler.AIVideo(c.Writer, c.Request, c.Param("id"))
 	})
@@ -119,6 +130,7 @@ func New() *gin.Engine {
 	})
 	v1.GET("/user-data/assets", gin.WrapF(handler.UserAssetData))
 	v1.POST("/user-data/assets", gin.WrapF(handler.SaveUserAssetData))
+	v1.GET("/cost/summary", gin.WrapF(handler.UserCostSummary))
 	api.GET("/proxy-image", gin.WrapF(handler.ProxyImage))
 	api.GET("/prompts", middleware.OptionalAuth, gin.WrapF(handler.Prompts))
 	api.GET("/assets", middleware.OptionalAuth, gin.WrapF(handler.Assets))
@@ -141,6 +153,7 @@ func New() *gin.Engine {
 	admin.GET("/ai-logs", gin.WrapF(handler.AdminAICallLogs))
 	admin.DELETE("/ai-logs", gin.WrapF(handler.AdminDeleteAICallLogs))
 	admin.GET("/settings", gin.WrapF(handler.AdminSettings))
+	admin.POST("/render/ffmpeg-path", gin.WrapF(handler.SaveRenderFFmpegPath))
 	admin.POST("/settings", gin.WrapF(handler.AdminSaveSettings))
 	admin.POST("/settings/channel-models", gin.WrapF(handler.AdminChannelModels))
 	admin.POST("/settings/channel-test", gin.WrapF(handler.AdminTestChannelModel))

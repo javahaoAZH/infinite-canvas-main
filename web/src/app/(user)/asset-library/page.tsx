@@ -1,31 +1,59 @@
 "use client";
 
-import { Copy, FolderPlus, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Copy, FolderPlus, Search, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { App, Button, Card, Drawer, Empty, Image, Input, Pagination, Spin, Tag, Typography } from "antd";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { cn } from "@/lib/utils";
-import { useAssetStore } from "@/stores/use-asset-store";
+import {
+    CHARACTER_VIEW_LABELS,
+    CHARACTER_VIEW_ORDER,
+    getCharacterInfo,
+    updateCharacterInfo,
+    useAssetStore,
+    type CharacterAsset,
+    type CharacterViewImage,
+} from "@/stores/use-asset-store";
 import { fetchAssetLibrary, type AssetLibraryItem } from "@/services/api/assets";
 
 const PAGE_SIZE = 12;
 
 export default function AssetLibraryPage() {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
     const copyText = useCopyText();
     const [keyword, setKeyword] = useState("");
     const [selectedType, setSelectedType] = useState("");
     const [selectedTags, setSelectedTags] = useState<string[]>([]);
     const [page, setPage] = useState(1);
     const [selectedAsset, setSelectedAsset] = useState<AssetLibraryItem | null>(null);
+    const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
     const addAsset = useAssetStore((state) => state.addAsset);
+    const assets = useAssetStore((state) => state.assets);
+    const removeAsset = useAssetStore((state) => state.removeAsset);
 
     const query = useQuery({
         queryKey: ["asset-library", keyword, selectedType, selectedTags, page],
         queryFn: () => fetchAssetLibrary({ keyword, type: selectedType, tag: selectedTags, page, pageSize: PAGE_SIZE }),
         retry: false,
+        enabled: selectedType !== "character",
     });
+
+    // 角色为纯前端本地资产，直接从我的素材中读取，不走后端素材库接口
+    const characters = useMemo(() => {
+        if (selectedType !== "character") return [];
+        const queryText = keyword.trim().toLowerCase();
+        return assets
+            .filter((asset) => asset.kind === "character")
+            .filter((asset) => !selectedTags.length || asset.tags.some((tag) => selectedTags.includes(tag)))
+            .filter((asset) => {
+                if (!queryText) return true;
+                const info = getCharacterInfo(asset);
+                return [asset.title, info?.description || "", ...(asset.tags || [])].join(" ").toLowerCase().includes(queryText);
+            });
+    }, [assets, keyword, selectedTags, selectedType]);
+    const characterPageItems = characters.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    const selectedCharacter = (assets.find((asset) => asset.id === selectedCharacterId && asset.kind === "character") as CharacterAsset | undefined) || null;
 
     useEffect(() => {
         if (query.isError) {
@@ -33,7 +61,7 @@ export default function AssetLibraryPage() {
         }
     }, [message, query.error, query.isError]);
 
-    const isReady = query.isFetched || query.isError;
+    const isReady = selectedType === "character" || query.isFetched || query.isError;
     const items = query.data?.items || [];
     const availableTags = query.data?.tags || [];
     const total = query.data?.total || 0;
@@ -95,6 +123,22 @@ export default function AssetLibraryPage() {
         }
     };
 
+    // 删除角色沿用现有素材删除链路，不额外新增逻辑
+    const deleteCharacter = (character: CharacterAsset) => {
+        modal.confirm({
+            title: "删除角色",
+            content: `确定删除角色「${getCharacterInfo(character)?.name || character.title}」吗？删除后会从我的素材中移除。`,
+            okText: "删除",
+            okButtonProps: { danger: true },
+            cancelText: "取消",
+            onOk: () => {
+                removeAsset(character.id);
+                setSelectedCharacterId(null);
+                message.success("角色已删除");
+            },
+        });
+    };
+
     if (!isReady) {
         return (
             <div className="flex h-full items-center justify-center">
@@ -134,6 +178,7 @@ export default function AssetLibraryPage() {
                                     { label: "图片", value: "image" },
                                     { label: "视频", value: "video" },
                                     { label: "音频", value: "audio" },
+                                    { label: "角色", value: "character" },
                                 ].map((item) => (
                                     <Tag.CheckableTag
                                         key={item.value || "all"}
@@ -181,16 +226,25 @@ export default function AssetLibraryPage() {
                 </div>
 
                 <div className="mx-auto flex max-w-7xl flex-col gap-5">
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
-                        {items.map((asset) => (
-                            <LibraryCard key={asset.id} asset={asset} onOpen={() => setSelectedAsset(asset)} onAdd={() => void saveToMyAssets(asset)} />
-                        ))}
-                    </div>
+                    {selectedType === "character" ? (
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
+                            {characterPageItems.map((asset) => (
+                                <CharacterCard key={asset.id} asset={asset as CharacterAsset} onOpen={() => setSelectedCharacterId(asset.id)} />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
+                            {items.map((asset) => (
+                                <LibraryCard key={asset.id} asset={asset} onOpen={() => setSelectedAsset(asset)} onAdd={() => void saveToMyAssets(asset)} />
+                            ))}
+                        </div>
+                    )}
 
-                    {!items.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有找到素材" className="py-20" /> : null}
+                    {selectedType === "character" && !characters.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无角色，可在后续流程中创建角色资产" className="py-20" /> : null}
+                    {selectedType !== "character" && !items.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有找到素材" className="py-20" /> : null}
 
                     <div className="flex justify-center">
-                        <Pagination current={page} pageSize={PAGE_SIZE} total={total} showSizeChanger={false} onChange={(nextPage) => setPage(nextPage)} />
+                        <Pagination current={page} pageSize={PAGE_SIZE} total={selectedType === "character" ? characters.length : total} showSizeChanger={false} onChange={(nextPage) => setPage(nextPage)} />
                     </div>
                 </div>
             </main>
@@ -239,6 +293,8 @@ export default function AssetLibraryPage() {
                     </div>
                 ) : null}
             </Drawer>
+
+            <CharacterDetailDrawer asset={selectedCharacter} onClose={() => setSelectedCharacterId(null)} onDelete={() => selectedCharacter && deleteCharacter(selectedCharacter)} />
         </div>
     );
 }
@@ -296,4 +352,136 @@ function assetTypeLabel(type: AssetLibraryItem["type"]) {
     if (type === "video") return "视频";
     if (type === "audio") return "音频";
     return "文本";
+}
+
+function CharacterViewCell({ view, label }: { view?: CharacterViewImage; label: string }) {
+    return view?.url ? (
+        <img src={view.url} alt={label} className="size-full object-cover" />
+    ) : (
+        <div className="flex size-full flex-col items-center justify-center gap-0.5 bg-stone-100 text-stone-400 dark:bg-stone-800 dark:text-stone-500">
+            <span className="text-[11px]">{label}</span>
+            <span className="text-[10px]">暂无</span>
+        </div>
+    );
+}
+
+export function CharacterCard({ asset, onOpen }: { asset: CharacterAsset; onOpen: () => void }) {
+    const info = getCharacterInfo(asset);
+    return (
+        <Card
+            hoverable
+            className="overflow-hidden"
+            styles={{ body: { padding: 0 } }}
+            cover={
+                <button type="button" className="block w-full text-left" onClick={onOpen}>
+                    <div className="grid aspect-[4/3] w-full grid-cols-2 gap-px bg-stone-200 dark:bg-stone-700">
+                        {CHARACTER_VIEW_ORDER.map((viewKey) => (
+                            <CharacterViewCell key={viewKey} view={info?.views[viewKey]} label={CHARACTER_VIEW_LABELS[viewKey]} />
+                        ))}
+                    </div>
+                </button>
+            }
+        >
+            <button type="button" className="block w-full text-left" onClick={onOpen}>
+                <div className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                        <h2 className="line-clamp-1 text-sm font-semibold text-stone-950 dark:text-stone-100">{info?.name || asset.title}</h2>
+                        <Tag className="m-0 shrink-0 text-[11px]">角色</Tag>
+                    </div>
+                    <Typography.Paragraph type="secondary" ellipsis={{ rows: 2 }} className="!mb-0 !mt-2 !text-xs !leading-5">
+                        {info?.description || "暂无描述"}
+                    </Typography.Paragraph>
+                </div>
+            </button>
+            <div className="px-4 pb-4">
+                <Button size="small" onClick={onOpen}>
+                    查看 / 编辑
+                </Button>
+            </div>
+        </Card>
+    );
+}
+
+export function CharacterDetailDrawer({ asset, onClose, onDelete }: { asset: CharacterAsset | null; onClose: () => void; onDelete: () => void }) {
+    const info = asset ? getCharacterInfo(asset) : null;
+    return (
+        <Drawer title="角色详情" open={Boolean(asset)} size="large" onClose={onClose}>
+            {asset && info ? (
+                <div className="space-y-5">
+                    <div className="grid grid-cols-2 gap-3">
+                        {CHARACTER_VIEW_ORDER.map((viewKey) => {
+                            const view = info.views[viewKey];
+                            return (
+                                <div key={viewKey}>
+                                    <Typography.Text type="secondary" className="mb-1 block text-xs">
+                                        {CHARACTER_VIEW_LABELS[viewKey]}
+                                    </Typography.Text>
+                                    {view?.url ? (
+                                        <Image src={view.url} alt={CHARACTER_VIEW_LABELS[viewKey]} className="aspect-[3/4] w-full rounded-lg object-cover" />
+                                    ) : (
+                                        <div className="flex aspect-[3/4] items-center justify-center rounded-lg border border-dashed border-stone-300 text-xs text-stone-400 dark:border-stone-700 dark:text-stone-500">暂无{CHARACTER_VIEW_LABELS[viewKey]}图</div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                    {info.voicePreset ? (
+                        <div className="flex items-center gap-2">
+                            <Typography.Text type="secondary" className="text-xs">
+                                声音预设
+                            </Typography.Text>
+                            <Tag className="m-0">{info.voicePreset}</Tag>
+                        </div>
+                    ) : null}
+                    <CharacterEditForm key={asset.id} asset={asset} />
+                    <div>
+                        <Button danger icon={<Trash2 className="size-4" />} onClick={onDelete}>
+                            删除角色
+                        </Button>
+                    </div>
+                </div>
+            ) : null}
+        </Drawer>
+    );
+}
+
+function CharacterEditForm({ asset }: { asset: CharacterAsset }) {
+    const { message } = App.useApp();
+    const info = getCharacterInfo(asset);
+    const originalName = info?.name || asset.title;
+    const originalDescription = info?.description || "";
+    const [name, setName] = useState(originalName);
+    const [description, setDescription] = useState(originalDescription);
+    const dirty = name.trim() !== originalName || description.trim() !== originalDescription;
+
+    const save = () => {
+        if (!name.trim()) {
+            message.error("请输入角色名称");
+            return;
+        }
+        updateCharacterInfo(asset.id, { name: name.trim(), description: description.trim() || undefined });
+        message.success("角色信息已更新");
+    };
+
+    return (
+        <div className="space-y-3 rounded-lg border border-stone-200 p-4 dark:border-stone-800">
+            <div>
+                <Typography.Text type="secondary" className="mb-1 block text-xs">
+                    角色名称
+                </Typography.Text>
+                <Input value={name} placeholder="角色名称" onChange={(event) => setName(event.target.value)} />
+            </div>
+            <div>
+                <Typography.Text type="secondary" className="mb-1 block text-xs">
+                    角色描述
+                </Typography.Text>
+                <Input.TextArea value={description} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="可选，记录角色设定、外貌、性格等描述" onChange={(event) => setDescription(event.target.value)} />
+            </div>
+            {dirty ? (
+                <Button type="primary" size="small" onClick={save}>
+                    保存修改
+                </Button>
+            ) : null}
+        </div>
+    );
 }

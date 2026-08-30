@@ -8,7 +8,8 @@ import { saveAs } from "file-saver";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { formatBytes } from "@/lib/image-utils";
 import { cn } from "@/lib/utils";
-import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
+import { useAssetStore, getCharacterInfo, type Asset, type AssetKind, type CharacterAsset } from "@/stores/use-asset-store";
+import { CharacterCard, CharacterDetailDrawer } from "../asset-library/page";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { AssetFormModal } from "@/components/assets/asset-form-modal";
 
@@ -18,6 +19,7 @@ const kindOptions = [
     { label: "图片", value: "image" },
     { label: "视频", value: "video" },
     { label: "音频", value: "audio" },
+    { label: "角色", value: "character" },
 ];
 
 export default function AssetsPage() {
@@ -35,7 +37,12 @@ export default function AssetsPage() {
     const [isAssetOpen, setIsAssetOpen] = useState(false);
     const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
     const [deletingAsset, setDeletingAsset] = useState<Asset | null>(null);
-    const validAssets = useMemo(() => assets.filter((asset) => asset.kind === "text" || asset.kind === "image" || asset.kind === "video" || asset.kind === "audio"), [assets]);
+    const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
+    const validAssets = useMemo(
+        () => assets.filter((asset) => asset.kind === "text" || asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" || asset.kind === "character"),
+        [assets],
+    );
+    const selectedCharacter = (assets.find((asset) => asset.id === selectedCharacterId && asset.kind === "character") as CharacterAsset | undefined) || null;
 
     const filteredAssets = useMemo(() => {
         const query = keyword.trim().toLowerCase();
@@ -188,9 +195,21 @@ export default function AssetsPage() {
 
                 <div className="mx-auto flex max-w-7xl flex-col gap-5">
                     <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                        {visibleAssets.map((asset) => (
-                            <AssetCard key={asset.id} asset={asset} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadAsset} onDelete={() => setDeletingAsset(asset)} />
-                        ))}
+                        {visibleAssets.map((asset) =>
+                            asset.kind === "character" ? (
+                                <CharacterCard key={asset.id} asset={asset as CharacterAsset} onOpen={() => setSelectedCharacterId(asset.id)} />
+                            ) : (
+                                <AssetCard
+                                    key={asset.id}
+                                    asset={asset}
+                                    onOpen={() => setPreviewAsset(asset)}
+                                    onEdit={() => openEdit(asset)}
+                                    onCopy={copyAssetText}
+                                    onDownload={downloadAsset}
+                                    onDelete={() => setDeletingAsset(asset)}
+                                />
+                            ),
+                        )}
                     </div>
 
                     {!visibleAssets.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有找到素材" className="py-20" /> : null}
@@ -214,6 +233,14 @@ export default function AssetsPage() {
             <AssetFormModal open={isAssetOpen} asset={editingAsset} onClose={() => setIsAssetOpen(false)} />
 
             <AssetDrawer asset={previewAsset} onClose={() => setPreviewAsset(null)} onCopy={copyAssetText} onDownload={downloadAsset} />
+
+            <CharacterDetailDrawer
+                asset={selectedCharacter}
+                onClose={() => setSelectedCharacterId(null)}
+                onDelete={() => {
+                    if (selectedCharacter) setDeletingAsset(selectedCharacter);
+                }}
+            />
 
             <input ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
 
@@ -325,6 +352,8 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
                             <video src={asset.data.url} controls className="mt-2 aspect-video w-full rounded-lg bg-black" />
                         ) : asset.kind === "audio" ? (
                             <audio src={asset.data.url} controls className="mt-2 w-full" />
+                        ) : asset.kind === "character" ? (
+                            <Typography.Paragraph className="mt-2 whitespace-pre-wrap">{getCharacterInfo(asset)?.description || "角色资产，请在素材库的角色分类中查看和编辑。"}</Typography.Paragraph>
                         ) : (
                             <Typography.Text className="mt-2 block">
                                 {asset.data.width}x{asset.data.height} · {formatBytes(asset.data.bytes)} · {asset.data.mimeType}
@@ -358,16 +387,18 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
 function assetSummary(asset: Asset) {
     if (asset.kind === "text") return asset.data.content;
     if (asset.kind === "audio") return `${formatBytes(asset.data.bytes || 0)} · ${asset.data.mimeType}`;
+    if (asset.kind === "character") return getCharacterInfo(asset)?.description || "角色资产";
     return `${asset.data.width}x${asset.data.height} · ${formatBytes(asset.data.bytes)} · ${asset.data.mimeType}`;
 }
 
 function assetSearchText(asset: Asset) {
-    return [asset.title, asset.source || "", asset.note || "", (asset.tags || []).join(" "), asset.kind === "text" ? asset.data.content : asset.data.mimeType].join(" ").toLowerCase();
+    return [asset.title, asset.source || "", asset.note || "", (asset.tags || []).join(" "), asset.kind === "text" ? asset.data.content : asset.kind === "character" ? getCharacterInfo(asset)?.description || "" : asset.data.mimeType].join(" ").toLowerCase();
 }
 
 function assetKindLabel(kind: AssetKind) {
     if (kind === "image") return "图片";
     if (kind === "video") return "视频";
     if (kind === "audio") return "音频";
+    if (kind === "character") return "角色";
     return "文本";
 }

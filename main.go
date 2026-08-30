@@ -17,6 +17,7 @@ func main() {
 	}
 	service.StartPromptSyncScheduler()
 	service.StartCanvasProjectCleanupScheduler()
+	service.StartRenderExecutor()
 	handler.StartVideoTaskPoller()
 	if err := runServer(); err != nil {
 		log.Fatal(err)

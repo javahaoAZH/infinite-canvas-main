@@ -80,6 +80,7 @@ func DB() (*gorm.DB, error) {
 			&model.CanvasImageTask{},
 			&model.CanvasAudioTask{},
 			&model.CanvasProject{},
+			&model.RenderTask{},
 		)
 	})
 	return db, dbErr

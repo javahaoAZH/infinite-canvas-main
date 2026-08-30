@@ -56,7 +56,7 @@ export function AssetFormModal({ open, asset = null, onClose }: AssetFormModalPr
             tags: asset.tags || [],
             source: asset.source,
             note: asset.note,
-            content: asset.kind === "text" ? asset.data.content : asset.kind === "image" ? asset.data.dataUrl : asset.data.url,
+            content: asset.kind === "text" ? asset.data.content : asset.kind === "image" ? asset.data.dataUrl : asset.kind === "character" ? "" : asset.data.url,
         } : { kind: "text", title: "", coverUrl: "", tags: [], source: "手动添加", note: "", content: "" });
     }, [asset, form, open]);
 
