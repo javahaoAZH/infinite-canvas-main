@@ -4,7 +4,7 @@ import { ImagePlus, Images, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { App, Button, Empty, Tag } from "antd";
 
-import { buildShotImagePrompt, resolveArtStyle } from "@/app/(user)/drama/prompts";
+import { buildShotImagePrompt, classifyShotFrame, resolveArtStyleBase, resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
 import { requestEdit, requestGeneration } from "@/services/api/image";
 import { uploadImage } from "@/services/image-storage";
 import { collectCharacterReferences, dramaImageConfig, useDramaStore, type DramaMedia, type DramaProject } from "@/stores/use-drama-store";
@@ -32,7 +32,8 @@ export function ShotImagesStep({ project }: { project: DramaProject }) {
         const config = dramaImageConfig(effectiveConfig);
         if (!isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的图片模型渠道");
         const references = collectCharacterReferences(useDramaStore.getState().projects.find((item) => item.id === project.id)?.characters || []);
-        const prompt = buildShotImagePrompt(shot.description, resolveArtStyle(useDramaStore.getState().artStyle).promptBase);
+        const state = useDramaStore.getState();
+        const prompt = buildShotImagePrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), classifyShotFrame(shot));
         const images = references.length ? await requestEdit(config, prompt, references) : await requestGeneration(config, prompt);
         const image = images[0];
         if (!image) throw new Error("图片接口没有返回结果");
@@ -84,7 +85,7 @@ export function ShotImagesStep({ project }: { project: DramaProject }) {
                     </span>
                     <span className="flex items-center gap-1">
                         画面风格
-                        <Tag className="m-0">{resolveArtStyle(artStyle).label}</Tag>
+                        <Tag className="m-0">{resolveArtStyleLabel(artStyle)}</Tag>
                     </span>
                 </div>
                 <Button type="primary" icon={<Images className="size-4" />} loading={batchRunning} onClick={() => void runBatch()}>

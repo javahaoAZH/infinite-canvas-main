@@ -5,7 +5,7 @@ import { useState } from "react";
 import { App, Button, Empty, Input, Select, Tag } from "antd";
 import { nanoid } from "nanoid";
 
-import { ART_STYLES, buildCharacterImagePrompt, resolveArtStyle } from "@/app/(user)/drama/prompts";
+import { ART_STYLES, buildCharacterImagePrompt, CUSTOM_ART_STYLE_ID, resolveArtStyleBase } from "@/app/(user)/drama/prompts";
 import { requestGeneration } from "@/services/api/image";
 import { uploadImage } from "@/services/image-storage";
 import {
@@ -27,6 +27,8 @@ export function CharactersStep({ project }: { project: DramaProject }) {
     const updateProject = useDramaStore((state) => state.updateProject);
     const artStyle = useDramaStore((state) => state.artStyle);
     const setArtStyle = useDramaStore((state) => state.setArtStyle);
+    const customArtStyle = useDramaStore((state) => state.customArtStyle);
+    const setCustomArtStyle = useDramaStore((state) => state.setCustomArtStyle);
     const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
 
     const patchCharacter = (id: string, patch: Partial<DramaCharacter>) => {
@@ -40,7 +42,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
         if (!isAiConfigReady(config, config.model)) return message.warning("请先在设置中配置可用的图片模型渠道");
         setBusyIds((current) => ({ ...current, [character.id]: true }));
         try {
-            const prompt = buildCharacterImagePrompt(description, resolveArtStyle(artStyle).promptBase);
+            const prompt = buildCharacterImagePrompt(description, resolveArtStyleBase(artStyle, customArtStyle));
             const results = await Promise.allSettled(Array.from({ length: CANDIDATE_COUNT }, () => requestGeneration(config, prompt)));
             const generated = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
             if (!generated.length) {
@@ -98,7 +100,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                     <Select
                         className="min-w-36"
                         value={artStyle}
-                        options={ART_STYLES.map((style) => ({ value: style.id, label: style.label }))}
+                        options={[...ART_STYLES.map((style) => ({ value: style.id, label: style.label })), { value: CUSTOM_ART_STYLE_ID, label: "自定义" }]}
                         onChange={(value) => setArtStyle(value)}
                     />
                     <Button icon={<Plus className="size-4" />} onClick={() => updateProject(project.id, { characters: [...project.characters, { id: nanoid(), name: `角色 ${project.characters.length + 1}`, description: "", candidates: [], views: {} }] })}>
@@ -106,6 +108,21 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                     </Button>
                 </div>
             </div>
+
+            {artStyle === CUSTOM_ART_STYLE_ID ? (
+                <div className="space-y-1.5 border border-stone-200 bg-white/70 p-3 dark:border-stone-800 dark:bg-stone-900/50">
+                    <Input.TextArea
+                        rows={2}
+                        value={customArtStyle}
+                        placeholder="自定义画风描述（可观察写法），例如：粗细不均的手绘铅笔线稿，淡彩薄涂上色，大面积纸面留白，阴影用交叉排线表现"
+                        onChange={(event) => setCustomArtStyle(event.target.value)}
+                    />
+                    <p className="text-xs text-stone-400 dark:text-stone-500">
+                        建议写线条、上色、光影、质感等可观察特征；留空时等价默认画风。
+                        {/高质量|精美|杰作|精美绝伦|顶级|电影级/.test(customArtStyle) ? "提示：“高质量/精美”类空泛词对生成效果几乎没有帮助，建议换成具体特征。" : ""}
+                    </p>
+                </div>
+            ) : null}
 
             {project.characters.length === 0 ? (
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无角色，可回到剧本步骤用 AI 结构化，或点击右上角添加" className="py-16" />

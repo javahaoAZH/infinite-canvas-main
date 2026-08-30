@@ -26,6 +26,8 @@ export type DramaShot = {
     id: string;
     description: string;
     dialogue: string;
+    // 可选旁白画外音（VO），旧数据可能缺失
+    narration?: string;
     seconds: number;
 };
 
@@ -55,20 +57,26 @@ export type DramaProject = {
 type DramaStore = {
     projects: DramaProject[];
     activeId: string | null;
-    // 画面风格（drama/prompts.ts 中 ART_STYLES 的 id），角色四视图 / 分镜图 / 图生视频三个视觉步骤共用
+    // 画面风格（drama/prompts.ts 中 ART_STYLES 的 id，或 "custom" 自定义），角色四视图 / 分镜图 / 图生视频三个视觉步骤共用
     artStyle: string;
+    // 自定义画风描述（artStyle 为 custom 时生效），要求可观察写法
+    customArtStyle: string;
+    // 剧本题材卡（drama/prompts.ts 中 GENRE_CARDS 的 id），空字符串表示不指定
+    genre: string;
     createProject: (title?: string) => string;
     openProject: (id: string) => void;
     renameProject: (id: string, title: string) => void;
     deleteProject: (id: string) => void;
     updateProject: (id: string, patch: Partial<Omit<DramaProject, "id" | "createdAt">>) => void;
     setArtStyle: (artStyle: string) => void;
+    setCustomArtStyle: (customArtStyle: string) => void;
+    setGenre: (genre: string) => void;
 };
 
 const DRAMA_STORE_KEY = "infinite-canvas:drama_store";
 
 export function newDramaShot(partial?: Partial<Omit<DramaShot, "id">>): DramaShot {
-    return { id: nanoid(), description: "", dialogue: "", seconds: 5, ...partial };
+    return { id: nanoid(), description: "", dialogue: "", narration: "", seconds: 5, ...partial };
 }
 
 export function createDramaProject(title: string): DramaProject {
@@ -126,6 +134,9 @@ const dramaStorage: PersistStorage<DramaStore> = {
         const parsed = JSON.parse(value) as StorageValue<DramaStore>;
         // 旧数据无 artStyle 字段时回落默认，不报错
         parsed.state.artStyle = typeof parsed.state.artStyle === "string" && parsed.state.artStyle.trim() ? parsed.state.artStyle : "default";
+        // 旧数据无自定义画风与题材字段时回落空（等价默认画风 / 不指定题材）
+        parsed.state.customArtStyle = typeof parsed.state.customArtStyle === "string" ? parsed.state.customArtStyle : "";
+        parsed.state.genre = typeof parsed.state.genre === "string" ? parsed.state.genre : "";
         parsed.state.projects = await Promise.all((parsed.state.projects || []).map(hydrateProject));
         return parsed;
     },
@@ -139,6 +150,8 @@ export const useDramaStore = create<DramaStore>()(
             projects: [],
             activeId: null,
             artStyle: "default",
+            customArtStyle: "",
+            genre: "",
             createProject: (title) => {
                 const project = createDramaProject(title || "");
                 set((state) => ({ projects: [project, ...state.projects], activeId: project.id }));
@@ -161,11 +174,13 @@ export const useDramaStore = create<DramaStore>()(
                     projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project)),
                 })),
             setArtStyle: (artStyle) => set({ artStyle: artStyle.trim() || "default" }),
+            setCustomArtStyle: (customArtStyle) => set({ customArtStyle }),
+            setGenre: (genre) => set({ genre }),
         }),
         {
             name: DRAMA_STORE_KEY,
             storage: dramaStorage,
-            partialize: (state) => ({ projects: state.projects, activeId: state.activeId, artStyle: state.artStyle }) as StorageValue<DramaStore>["state"],
+            partialize: (state) => ({ projects: state.projects, activeId: state.activeId, artStyle: state.artStyle, customArtStyle: state.customArtStyle, genre: state.genre }) as StorageValue<DramaStore>["state"],
         },
     ),
 );

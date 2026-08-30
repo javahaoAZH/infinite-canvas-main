@@ -2,7 +2,7 @@
 
 import { Film, LoaderCircle, Music2, Send, Video } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { App, Button, Empty, Progress } from "antd";
+import { App, Button, Empty, Progress, Tag } from "antd";
 import { nanoid } from "nanoid";
 import { useRouter } from "next/navigation";
 
@@ -14,6 +14,14 @@ import { createRenderTask, getRenderTask, RENDER_POLL_INTERVAL_MS, type RenderTa
 import { dramaAudioConfig, useDramaStore, type DramaMedia, type DramaProject } from "@/stores/use-drama-store";
 import { useEffectiveConfig, useConfigStore } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
+
+type VoiceKind = "dialogue" | "narration";
+type VoiceRow = { shotId: string; shotIndex: number; kind: VoiceKind; text: string };
+// 附带镜头索引与音频槽位（0=对白、1=旁白），画布布局按镜头维度计算
+type CanvasPayload = InsertAssetPayload & { shotIndex: number; audioSlot: number };
+
+// 对白与旁白各占一条配音：对白沿用 shotId，旁白用 `${shotId}:narration`，shotAudios 天然支持
+const voiceAudioKey = (row: Pick<VoiceRow, "shotId" | "kind">) => (row.kind === "dialogue" ? row.shotId : `${row.shotId}:narration`);
 
 export function VoiceStep({ project }: { project: DramaProject }) {
     const { message } = App.useApp();
@@ -36,64 +44,70 @@ export function VoiceStep({ project }: { project: DramaProject }) {
         };
     }, []);
 
-    const patchShotAudio = (shotId: string, media: DramaMedia) => {
+    const voiceRows: VoiceRow[] = project.shots.flatMap((shot, index) => [
+        ...(shot.dialogue.trim() ? [{ shotId: shot.id, shotIndex: index, kind: "dialogue" as const, text: shot.dialogue.trim() }] : []),
+        ...((shot.narration || "").trim() ? [{ shotId: shot.id, shotIndex: index, kind: "narration" as const, text: (shot.narration || "").trim() }] : []),
+    ]);
+
+    const patchShotAudio = (key: string, media: DramaMedia) => {
         const current = useDramaStore.getState().projects.find((item) => item.id === project.id);
-        updateProject(project.id, { shotAudios: { ...(current?.shotAudios || {}), [shotId]: media } });
+        updateProject(project.id, { shotAudios: { ...(current?.shotAudios || {}), [key]: media } });
     };
 
-    const generateShotAudio = async (shotId: string) => {
-        const current = useDramaStore.getState().projects.find((item) => item.id === project.id);
-        const shot = current?.shots.find((item) => item.id === shotId);
-        if (!shot?.dialogue.trim()) throw new Error("该分镜没有对白，请先在分镜步骤填写");
+    const generateRowAudio = async (row: VoiceRow) => {
         const config = dramaAudioConfig(effectiveConfig);
         if (!isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的音频模型渠道");
-        const blob = await requestAudioGeneration(config, shot.dialogue.trim());
+        const blob = await requestAudioGeneration(config, row.text);
         const stored = await storeGeneratedAudio(blob);
-        patchShotAudio(shotId, { url: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, mimeType: stored.mimeType, durationMs: stored.durationMs });
+        patchShotAudio(voiceAudioKey(row), { url: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, mimeType: stored.mimeType, durationMs: stored.durationMs });
     };
 
-    const runSingle = async (shotId: string) => {
-        setBusyIds((current) => ({ ...current, [shotId]: true }));
-        setErrors((current) => ({ ...current, [shotId]: "" }));
+    const runSingle = async (row: VoiceRow) => {
+        const key = voiceAudioKey(row);
+        setBusyIds((current) => ({ ...current, [key]: true }));
+        setErrors((current) => ({ ...current, [key]: "" }));
         try {
-            await generateShotAudio(shotId);
+            await generateRowAudio(row);
         } catch (error) {
-            setErrors((current) => ({ ...current, [shotId]: error instanceof Error ? error.message : "配音生成失败，可重试" }));
+            setErrors((current) => ({ ...current, [key]: error instanceof Error ? error.message : "配音生成失败，可重试" }));
         } finally {
-            setBusyIds((current) => ({ ...current, [shotId]: false }));
+            setBusyIds((current) => ({ ...current, [key]: false }));
         }
     };
 
     const runBatch = async () => {
-        const pending = project.shots.filter((shot) => shot.dialogue.trim() && !project.shotAudios[shot.id]);
-        if (!pending.length) return message.info("没有待生成的配音（需要有对白的分镜）");
+        const pending = voiceRows.filter((row) => !project.shotAudios[voiceAudioKey(row)]);
+        if (!pending.length) return message.info("没有待生成的配音（需要有对白或旁白的分镜）");
         setBatchRunning(true);
         let failed = 0;
-        for (const shot of pending) {
-            setBusyIds((current) => ({ ...current, [shot.id]: true }));
-            setErrors((current) => ({ ...current, [shot.id]: "" }));
+        for (const row of pending) {
+            const key = voiceAudioKey(row);
+            setBusyIds((current) => ({ ...current, [key]: true }));
+            setErrors((current) => ({ ...current, [key]: "" }));
             try {
-                await generateShotAudio(shot.id);
+                await generateRowAudio(row);
             } catch (error) {
                 failed += 1;
-                setErrors((current) => ({ ...current, [shot.id]: error instanceof Error ? error.message : "配音生成失败，可重试" }));
+                setErrors((current) => ({ ...current, [key]: error instanceof Error ? error.message : "配音生成失败，可重试" }));
             } finally {
-                setBusyIds((current) => ({ ...current, [shot.id]: false }));
+                setBusyIds((current) => ({ ...current, [key]: false }));
             }
         }
         setBatchRunning(false);
-        message[failed ? "warning" : "success"](failed ? `批量生成完成，${failed} 个分镜失败，可单独重试` : "全部配音生成完成");
+        message[failed ? "warning" : "success"](failed ? `批量生成完成，${failed} 条失败，可单独重试` : "全部配音生成完成");
     };
 
-    // 组装 InsertAssetPayload：剧本 + 分镜视频 + 分镜配音，经画布导入通道写入节点
-    const buildPayloads = (): InsertAssetPayload[] => {
-        const payloads: InsertAssetPayload[] = [];
-        if (project.script.trim()) payloads.push({ kind: "text", content: project.script.trim(), title: `${project.title} · 剧本` });
+    // 组装 InsertAssetPayload：剧本 + 分镜视频 + 分镜配音（对白与旁白），经画布导入通道写入节点
+    const buildPayloads = (): CanvasPayload[] => {
+        const payloads: CanvasPayload[] = [];
+        if (project.script.trim()) payloads.push({ kind: "text", content: project.script.trim(), title: `${project.title} · 剧本`, shotIndex: -1, audioSlot: 0 });
         project.shots.forEach((shot, index) => {
             const video = project.shotVideos[shot.id];
-            if (video) payloads.push({ kind: "video", url: video.url, storageKey: video.storageKey, title: `分镜 ${index + 1} 视频`, width: video.width, height: video.height, mimeType: video.mimeType, source: "asset" });
+            if (video) payloads.push({ kind: "video", url: video.url, storageKey: video.storageKey, title: `分镜 ${index + 1} 视频`, width: video.width, height: video.height, mimeType: video.mimeType, source: "asset", shotIndex: index, audioSlot: 0 });
             const audio = project.shotAudios[shot.id];
-            if (audio) payloads.push({ kind: "audio", url: audio.url, storageKey: audio.storageKey, title: `分镜 ${index + 1} 配音`, bytes: audio.bytes, mimeType: audio.mimeType, durationMs: audio.durationMs, source: "asset" });
+            if (audio) payloads.push({ kind: "audio", url: audio.url, storageKey: audio.storageKey, title: `分镜 ${index + 1} 对白`, bytes: audio.bytes, mimeType: audio.mimeType, durationMs: audio.durationMs, source: "asset", shotIndex: index, audioSlot: 0 });
+            const narrationAudio = project.shotAudios[`${shot.id}:narration`];
+            if (narrationAudio) payloads.push({ kind: "audio", url: narrationAudio.url, storageKey: narrationAudio.storageKey, title: `分镜 ${index + 1} 旁白`, bytes: narrationAudio.bytes, mimeType: narrationAudio.mimeType, durationMs: narrationAudio.durationMs, source: "asset", shotIndex: index, audioSlot: 1 });
         });
         return payloads;
     };
@@ -103,7 +117,7 @@ export function VoiceStep({ project }: { project: DramaProject }) {
         if (!payloads.length) return message.warning("还没有可发送的内容，请先生成分镜视频或配音");
         const canvasStore = useCanvasStore.getState();
         if (!canvasStore.hydrated) return message.info("画布数据正在加载，请稍后再试");
-        const nodes = payloads.map((payload, index) => payloadToNode(payload, index));
+        const nodes = payloads.map((payload) => payloadToNode(payload));
         const canvasProjectId = canvasStore.importProject({ title: `${project.title} · 漫剧成片`, nodes });
         message.success("已发送到画布");
         router.push(`/canvas/view?id=${canvasProjectId}`);
@@ -126,8 +140,9 @@ export function VoiceStep({ project }: { project: DramaProject }) {
                 if (videoUrl.startsWith("blob:")) throw new Error("分镜视频保存在本地浏览器中，请登录并重新生成视频后再一键成片");
                 if (video.width && video.height) ({ width, height } = { width: video.width, height: video.height });
                 items.push({ kind: "video", source: videoUrl });
-                const audio = project.shotAudios[shot.id];
-                if (audio) {
+                for (const key of [shot.id, `${shot.id}:narration`]) {
+                    const audio = project.shotAudios[key];
+                    if (!audio) continue;
                     const audioUrl = await resolveMediaUrl(audio.storageKey, audio.url);
                     if (audioUrl.startsWith("blob:")) throw new Error("分镜配音保存在本地浏览器中，请登录并重新生成配音后再一键成片");
                     items.push({ kind: "audio", source: audioUrl, durationMs: audio.durationMs || Math.max(1000, Math.round((shot.seconds || 5) * 1000)) });
@@ -152,33 +167,36 @@ export function VoiceStep({ project }: { project: DramaProject }) {
         }
     };
 
-    const dialogueShots = project.shots.filter((shot) => shot.dialogue.trim());
+    const narrationCount = project.shots.filter((shot) => (shot.narration || "").trim()).length;
     const renderVideoUrl = renderTask?.url || renderTask?.video_url || "";
 
     return (
         <div className="mx-auto w-full max-w-5xl space-y-6">
             <section className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-sm text-stone-500 dark:text-stone-400">逐分镜为对白生成配音，完成后可发送到画布或一键成片。</div>
+                    <div className="text-sm text-stone-500 dark:text-stone-400">
+                        逐条为对白与旁白生成配音（共 {voiceRows.length} 条，其中旁白 {narrationCount} 条），完成后可发送到画布或一键成片。
+                    </div>
                     <Button type="primary" icon={<Music2 className="size-4" />} loading={batchRunning} onClick={() => void runBatch()}>
                         生成全部配音
                     </Button>
                 </div>
-                {dialogueShots.length === 0 ? (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="所有分镜都没有对白，可回到分镜步骤补充" className="py-10" />
+                {voiceRows.length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="所有分镜都没有对白与旁白，可回到分镜步骤补充" className="py-10" />
                 ) : (
                     <div className="space-y-3">
-                        {dialogueShots.map((shot) => {
-                            const index = project.shots.findIndex((item) => item.id === shot.id);
-                            const media = project.shotAudios[shot.id];
-                            const busy = busyIds[shot.id];
+                        {voiceRows.map((row) => {
+                            const key = voiceAudioKey(row);
+                            const media = project.shotAudios[key];
+                            const busy = busyIds[key];
                             return (
-                                <div key={shot.id} className="flex flex-wrap items-center gap-3 border border-stone-200 bg-white/70 p-3 dark:border-stone-800 dark:bg-stone-900/50">
-                                    <span className="flex size-7 shrink-0 items-center justify-center bg-stone-900 text-xs font-semibold text-white dark:bg-stone-100 dark:text-stone-900">{index + 1}</span>
-                                    <p className="min-w-40 flex-1 text-sm text-stone-700 dark:text-stone-200">「{shot.dialogue}」</p>
+                                <div key={key} className="flex flex-wrap items-center gap-3 border border-stone-200 bg-white/70 p-3 dark:border-stone-800 dark:bg-stone-900/50">
+                                    <span className="flex size-7 shrink-0 items-center justify-center bg-stone-900 text-xs font-semibold text-white dark:bg-stone-100 dark:text-stone-900">{row.shotIndex + 1}</span>
+                                    <Tag color={row.kind === "narration" ? "purple" : "default"} className="m-0">{row.kind === "narration" ? "旁白" : "对白"}</Tag>
+                                    <p className="min-w-40 flex-1 text-sm text-stone-700 dark:text-stone-200">「{row.text}」</p>
                                     {media ? <audio src={media.url} controls className="h-9 max-w-60" /> : null}
-                                    {errors[shot.id] ? <p className="w-full text-xs text-red-500">{errors[shot.id]}</p> : null}
-                                    <Button size="small" loading={busy} onClick={() => void runSingle(shot.id)}>
+                                    {errors[key] ? <p className="w-full text-xs text-red-500">{errors[key]}</p> : null}
+                                    <Button size="small" loading={busy} onClick={() => void runSingle(row)}>
                                         {media ? "重新生成" : "生成配音"}
                                     </Button>
                                 </div>
@@ -227,11 +245,11 @@ export function VoiceStep({ project }: { project: DramaProject }) {
     );
 }
 
-// InsertAssetPayload → 画布节点：按产出顺序横向排布，视频在上、音频在下
-function payloadToNode(payload: InsertAssetPayload, index: number): CanvasNodeData {
+// InsertAssetPayload → 画布节点：按镜头维度横向排布，视频在上、音频在下
+// 列基准 = shotIndex * 480（与视频节点间距一致）；同一镜头的对白/旁白按 audioSlot * 400 水平错开，避免坐标重叠
+function payloadToNode(payload: CanvasPayload): CanvasNodeData {
     const row = payload.kind === "audio" ? 1 : 0;
-    const column = Math.floor(index / 2);
-    const position = { x: column * 480, y: row * 320 };
+    const position = { x: payload.shotIndex * 480 + (payload.kind === "audio" ? payload.audioSlot * 400 : 0), y: row * 320 };
     if (payload.kind === "text") {
         return { id: `text-${nanoid()}`, type: CanvasNodeType.Text, title: payload.title, position: { x: -420, y: 0 }, width: 340, height: 240, metadata: { content: payload.content, status: "success" } };
     }
