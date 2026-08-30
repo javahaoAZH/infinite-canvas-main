@@ -108,15 +108,25 @@ description: 当前版本已实现但仍需人工验证的变更项
 - 需重点验证六点：① 文生图与带参考图编辑正常出图，尺寸「宽x高」映射为「宽*高」；② 图生视频需首帧、无首帧时中文报错，首帧自动压缩为 ≤4MB JPEG，轮询间隔 15 秒、最长 20 分钟，完成后临时 OSS 视频链接自动转存本地；③ qwen3-tts 配音正常（默认音色 Cherry），不支持参考音频时中文报错；④ /drama 全流程（剧本 → 分镜图 → 角色四视图 → 图生视频 → 配音）走百炼渠道跑通；⑤ 视频任务入库与刷新后轮询恢复（后端 `output.task_id` 归一化链路）；⑥ 上游报错（额度不足、参数非法）展示中文错误信息。
 - E2E 修复：① 图生视频上游成功不再被 `error: {"message":""}` 空对象误判为失败，创建成功正常返回 task_id（空 message 一律视为无错误）；② 带参考图编辑自动改用 `qwen-image-edit-plus` 且后端模型白名单放行该模型；③ 音色不属于百炼音色集合（如默认 `alloy`）时自动回退 `Cherry`；④ 空/无效错误不再直接展示，回退「视频生成失败，请重试」等中文描述，上游英文错误以「百炼服务返回错误：」前缀展示并保留原文。
 
-## Qoder ↔ 漫剧通信通道（MCP，需人工验证）
+## Qoder ↔ 漫剧通信通道（MCP，内置 Go 适配器 + 零配置自动注册，自动注册与协议对等已实测通过）
 
-- 首次使用：① 在「配置与用户偏好」弹窗（顶部导航齿轮）新增的「Qoder 通道」一节打开开关（自动生成令牌，页面每 3 秒自动重连 ws://127.0.0.1:9801）；② 适配器目录安装依赖：`cd mcp-adapter; npm install`（已装可跳过）；③ 填写适配器脚本绝对路径（如 `D:/infinite-canvas-main/mcp-adapter/drama-mcp.mjs`），复制弹窗生成的 Qoder MCP 注册配置（`{"command":"node","args":["<脚本绝对路径>","--token","<令牌>"]}`）粘贴到 Qoder 的 MCP 设置并保存；④ Qoder 拉起适配器后弹窗与 /drama 页头状态点变为「已连接」（绿点）。
-- /drama 页头新增轻量「Qoder 通道」状态入口（未开启灰点 / 连接中琥珀闪点 / 未连接橙点 / 已连接绿点），点击打开配置弹窗；配置存 localStorage（`infinite-canvas:drama_bridge`：enabled/token/adapterPath），令牌可重新生成（Popconfirm 二次确认）。
-- 适配器（`mcp-adapter/drama-mcp.mjs`）：STDIO(MCP) ↔ WebSocket 双向转发；页面首条消息 hello 携令牌鉴权，不匹配以 4401 关闭，匹配回 ready；单次调用 120 秒超时；页面未连接时报「漫剧页面未连接：请打开漫剧页面并开启「Qoder 通道」开关」。
-- 共 14 个工具：drama_list_projects / drama_get_project（媒体只回布尔存在性，renderUrl 仅 http/https）/ drama_create_project（设为活跃项目，不在 /drama 时自动跳转）/ drama_set_options（非法 id 报错列出合法值）/ drama_set_script / drama_apply_shots（结构化直写：整包替换分镜并清空三张媒体表）/ drama_update_shots（按 id 部分更新：只覆盖传入字段、秒数钳 1-30、不清媒体、保留已有媒体关联，无效 id 报错列出）/ drama_get_skills（题材/场景/画风/镜头词表/分镜与角色写法规范，单一事实来源）/ drama_review_shots（机械 + 语义审查，语义失败降级仅机械结果 degraded=true，findings 带 index 定位与可解析时的 shotId）/ drama_start_production / drama_get_production_status / drama_control_production（pause/resume/abort/retry/skip）/ drama_start_render / drama_get_render_status。
+- 零配置自动注册：适配器已 Go 化内置为主 exe 隐藏子命令 `InfiniteCanvas.exe mcp-adapter --token <令牌> [--port 9801]`（`mcpadapter/` 包，gorilla/websocket + mcp-go）。在「配置与用户偏好」弹窗「Qoder 通道」一节打开开关或重新生成令牌时，页面即发即忘调用后端注册接口，后端把适配器条目原子合并写入 `~/.qoder/mcp.json`（解析现有文件失败先备份 `.bak`），无需再手动复制粘贴 MCP 注册配置；关闭开关时带标记守卫移除该条目，不误删用户其他 MCP 配置。Qoder 加载 MCP 时直接拉起内置子命令，弹窗与 /drama 页头状态点变为「已连接」（绿点）。
+- 自动注册测试矩阵：① 开开关：`~/.qoder/mcp.json` 写入 exe 条目（含令牌，默认端口 9801）；② 关开关：条目被移除，文件中其他配置不受影响；③ 重新生成令牌：条目内令牌被重写；④ 开发模式（`go run`，无编译产物）：降级写入 node 条目（`mcp-adapter/drama-mcp.mjs`，需已 `npm install`）；⑤ 写入失败（目录不可写、路径异常等）：中文报错，降级展示手动注册区块（复制注册配置粘贴到 Qoder），不阻断开关本身。
+- 协议对等清单（Go 内置子命令须与原 `mcp-adapter/drama-mcp.mjs` 完全对等，原目录保留为 fallback）：STDIO(MCP) ↔ WebSocket 127.0.0.1:9801 双向转发；页面首条消息 hello 携令牌鉴权，令牌不匹配以 4401 关闭、未鉴权异常以 4400 关闭，匹配回 ready；单次调用 120 秒超时；支持并发调用；页面未连接时以中文拒绝「漫剧页面未连接：请打开漫剧页面并开启「Qoder 通道」开关」；14 个原有工具行为不变：drama_list_projects / drama_get_project（媒体只回布尔存在性，renderUrl 仅 http/https）/ drama_create_project（设为活跃项目，不在 /drama 时自动跳转）/ drama_set_options（非法 id 报错列出合法值）/ drama_set_script / drama_apply_shots（结构化直写：整包替换分镜并清空三张媒体表）/ drama_update_shots（按 id 部分更新：只覆盖传入字段、秒数钳 1-30、不清媒体、保留已有媒体关联，无效 id 报错列出）/ drama_get_skills（题材/场景/画风/镜头词表/分镜与角色写法规范，单一事实来源）/ drama_review_shots（机械 + 语义审查，语义失败降级仅机械结果 degraded=true，findings 带 index 定位与可解析时的 shotId）/ drama_start_production / drama_get_production_status / drama_control_production（pause/resume/abort/retry/skip）/ drama_start_render / drama_get_render_status。
+- 新增 2 个页面侧工具（共 16 个）：① `drama_api_request`：AI 代页面调用本应用后端接口，参数 path（强制 `/api` 前缀）、method（GET/POST/PUT/DELETE 白名单）、body（请求体 2MB 上限），自动携带当前登录态 Bearer 令牌，非 GET 请求成功后触发页面数据刷新（后端另有 `GET /api/qoder-channel/status` 快照含 registered 注册状态字段、`POST /api/qoder-channel` 接收 {enabled,token}）；② `drama_local_config`：读写漫剧页面本地配置（画风、场景等），get/set 双操作，key 经 keyof 校验，非法 key 拒绝。
+- 安全模型：WebSocket 仅监听 127.0.0.1 回环 + 随机令牌门禁（错误令牌 4401 拒绝接入）；令牌明文存于 `~/.qoder/mcp.json` 与进程 argv，属本机信任边界，本机任意进程可读取，不适用于不可信的多用户共享环境；`drama_api_request` 携带登录态，其一切调用等同用户本人权限。
+- /drama 页头轻量「Qoder 通道」状态入口不变（未开启灰点 / 连接中琥珀闪点 / 未连接橙点 / 已连接绿点），点击打开配置弹窗；弹窗状态文案按「开关 × 注册 × 连接」矩阵展示，手动注册区块降级保留；页面加载与刷新公开配置时同步刷新注册状态。
 - 推荐工具流（已写入工具描述）：drama_get_skills 获取写法规范 → 产出（set_script / apply_shots）→ drama_review_shots 检测 → 对不合格 findings 用 drama_update_shots 按 id 回写修复 → 复检 review_shots → 通过后 drama_start_production →（生成完成后）drama_start_render + drama_get_render_status 轮询成片。
-- 需重点验证：真实 AI API Key 下的 drama_review_shots 语义评审、drama_start_production 完整生产、drama_start_render 真实渲染（无 Key 时语义评审降级为机械检查属预期行为）；另需人工确认 https 部署下浏览器拦截本地 ws（仅 http 本机环境可用）。
-- 已自动端到端验证通过（本地自动验证）：14 个工具功能调用、非法参数校验（zod 返回 -32602）、错误令牌被 4401 拒绝接入、令牌不匹配双向拒绝、页面关闭重开后 3 秒内自动重连。
+- 验证结论（经 Qoder 实测，以下均已通过）：
+  - 自动注册链路：开关 ON 即写入 `~/.qoder/mcp.json` exe 条目（mode=exe，含令牌）→ Qoder 热加载直接拉起内置适配器 → 页面 1 秒内显示「已连接」；开关 OFF 条目被移除，其他配置不受影响；令牌重新生成后条目被重写（先删旧条目再写新条目的两阶段）且重连成功。
+  - 协议对等：16 项工具调用全部通过，错误令牌 4401 门禁拒绝、并发调用与页面断开时的中文拒绝均符合预期；首轮 26/27 的缺口已修复，复测全通过。
+  - 新工具实测：`drama_api_request` GET `/api/settings` 返回 `code: 0`；`drama_local_config` get/set 读写正常；非 `/api/` 前缀的非法路径被中文拒绝。
+- 实现注记（验证中发现并修复的关键行为）：
+  - Qoder 的文件监视只响应 `mcp.json` 的原地修改、不响应「临时文件 + rename」，故 `writeAtomicJSON` 在 rename 之后补一次原地写；
+  - Qoder 对同 key 条目的参数原地变更不会重启适配器，故注册 Apply 采用「先删条目再写入」的两阶段以强制重启；
+  - Go 侧需容忍 `~/.qoder/mcp.json` 开头可能存在的 UTF-8 BOM；
+  - gorilla/websocket 需在升级检查中放行 Origin（安全模型不变：仅 127.0.0.1 回环 + 令牌门禁，与 node 版一致）。
+- 剩余待验证：真实 AI API Key 下的 drama_review_shots 语义评审、drama_start_production 完整生产、drama_start_render 真实渲染（无 Key 时语义评审降级为机械检查属预期行为）；另需人工确认 https 部署下浏览器拦截本地 ws（仅 http 本机环境可用）。
 
 ## /drama 自动生产（专家团式一键流水线，需真实 API Key 人工验证）
 
