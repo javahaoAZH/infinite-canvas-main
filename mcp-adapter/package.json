@@ -1,0 +1,18 @@
+{
+    "name": "drama-mcp-adapter",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "description": "Qoder ↔ AI 漫剧软件 MCP 适配器：STDIO(MCP) ↔ WebSocket(127.0.0.1:9801) ↔ 漫剧页面",
+    "bin": {
+        "drama-mcp": "drama-mcp.mjs"
+    },
+    "engines": {
+        "node": ">=18"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.30.0",
+        "ws": "^8.21.3",
+        "zod": "^4.5.4"
+    }
+}

@@ -1,11 +1,14 @@
 "use client";
 
 import { ChevronLeft, ChevronRight, Drama, FolderPlus, PencilLine, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { App, Button, Empty, Input, Modal, Select, Steps } from "antd";
 
+import { useConfigStore } from "@/stores/use-config-store";
 import { useDramaStore, useActiveDramaProject } from "@/stores/use-drama-store";
+import { getBridgeSnapshot, onBridgeStatusChange } from "./services/drama-bridge";
 import { CharactersStep } from "./components/characters-step";
+import { DirectorEntry } from "./components/director/director-entry";
 import { ScriptStep } from "./components/script-step";
 import { ShotImagesStep } from "./components/shot-images-step";
 import { ShotVideosStep } from "./components/shot-videos-step";
@@ -13,13 +16,32 @@ import { ShotsStep } from "./components/shots-step";
 import { VoiceStep } from "./components/voice-step";
 
 const STEP_ITEMS = [
-    { title: "剧本", description: "输入剧本并结构化" },
-    { title: "分镜", description: "编辑分镜内容" },
-    { title: "角色四视图", description: "生成立绘并分配视图" },
-    { title: "分镜图", description: "逐分镜生成画面" },
-    { title: "图生视频", description: "逐分镜生成视频" },
-    { title: "配音成片", description: "配音、画布与成片" },
+    { title: "剧本", content: "输入剧本并结构化" },
+    { title: "分镜", content: "编辑分镜内容" },
+    { title: "角色四视图", content: "生成立绘并分配视图" },
+    { title: "分镜图", content: "逐分镜生成画面" },
+    { title: "图生视频", content: "逐分镜生成视频" },
+    { title: "配音成片", content: "配音、画布与成片" },
 ];
+
+// 头部轻量通道状态入口：状态点 + 标签，点击打开配置弹窗（开关/令牌/注册配置在「配置与用户偏好」中）
+function BridgeStatusEntry() {
+    const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
+    const [snapshot, setSnapshot] = useState(() => getBridgeSnapshot());
+    useEffect(() => onBridgeStatusChange(setSnapshot), []);
+    const label = !snapshot.enabled ? "Qoder 通道" : snapshot.status === "connected" ? "Qoder 已连接" : snapshot.status === "connecting" ? "Qoder 连接中" : "Qoder 未连接";
+    const dotClass = !snapshot.enabled ? "bg-stone-300 dark:bg-stone-600" : snapshot.status === "connected" ? "bg-emerald-500" : snapshot.status === "connecting" ? "animate-pulse bg-amber-500" : "bg-orange-500";
+    return (
+        <button
+            type="button"
+            className="flex items-center gap-1.5 rounded-md border border-stone-200 px-2.5 py-1 text-xs text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900 dark:border-stone-800 dark:text-stone-400 dark:hover:border-stone-700 dark:hover:text-stone-100"
+            onClick={() => setConfigDialogOpen(true)}
+        >
+            <span className={`size-2 shrink-0 rounded-full ${dotClass}`} />
+            {label}
+        </button>
+    );
+}
 
 export default function DramaPage() {
     const { message, modal } = App.useApp();
@@ -58,6 +80,8 @@ export default function DramaPage() {
                             <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">剧本 → 分镜 → 角色四视图 → 分镜图 → 图生视频 → 配音成片，六步完成一部漫剧。</p>
                         </div>
                         <div className="ml-auto flex flex-wrap items-center gap-2">
+                            <BridgeStatusEntry />
+                            <DirectorEntry project={project} />
                             <Select
                                 className="min-w-44"
                                 value={project.id}

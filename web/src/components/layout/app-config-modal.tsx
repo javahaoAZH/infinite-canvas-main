@@ -1,12 +1,14 @@
 "use client";
 
-import { App, Button, Form, Input, Modal, Segmented, Select, Switch, Typography } from "antd";
+import { App, Button, Form, Input, Modal, Popconfirm, Segmented, Select, Switch, Typography } from "antd";
 import { useEffect, useState } from "react";
 
 import { ChannelModelSelectorModal } from "@/components/channel-model-selector-modal";
 import { GrokTtsVoiceSelect } from "@/components/grok-tts-voice-select";
 import { ModelPicker } from "@/components/model-picker";
 import { VOICE_DIRECTION_GUIDE } from "@/app/(user)/drama/prompts";
+import { getBridgeSnapshot, loadBridgeConfig, onBridgeStatusChange, regenerateBridgeToken, setBridgeAdapterPath, setBridgeEnabled, type BridgeStatus } from "@/app/(user)/drama/services/drama-bridge";
+import { useCopyText } from "@/hooks/use-copy-text";
 import { fetchImageModels } from "@/services/api/image";
 import { getRenderFFmpegStatus, saveRenderFFmpegPath, type RenderFFmpegStatus } from "@/services/api/render";
 import { fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
@@ -54,6 +56,9 @@ export function AppConfigModal() {
     const [ffmpegStatus, setFfmpegStatus] = useState<RenderFFmpegStatus | null>(null);
     const [loadingFFmpegStatus, setLoadingFFmpegStatus] = useState(false);
     const [savingFFmpegPath, setSavingFFmpegPath] = useState(false);
+    const copyText = useCopyText();
+    const [bridgeConfig, setBridgeConfig] = useState(() => loadBridgeConfig());
+    const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>(() => getBridgeSnapshot().status);
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
@@ -149,6 +154,30 @@ export function AppConfigModal() {
             canceled = true;
         };
     }, [isConfigOpen, token]);
+
+    // Qoder 通道状态订阅 + 弹窗打开时刷新本地配置（令牌/路径可能在他处变化）
+    useEffect(() => onBridgeStatusChange((snapshot) => setBridgeStatus(snapshot.status)), []);
+
+    useEffect(() => {
+        if (isConfigOpen) setBridgeConfig(loadBridgeConfig());
+    }, [isConfigOpen]);
+
+    const handleBridgeEnabled = (enabled: boolean) => {
+        setBridgeEnabled(enabled);
+        setBridgeConfig(loadBridgeConfig());
+    };
+
+    const handleRegenerateBridgeToken = () => {
+        regenerateBridgeToken();
+        setBridgeConfig(loadBridgeConfig());
+        message.success("通道令牌已重新生成，请同步更新 Qoder 中的注册配置");
+    };
+
+    const bridgeRegistrationJson = JSON.stringify(
+        { command: "node", args: [bridgeConfig.adapterPath.trim() || "<mcp-adapter/drama-mcp.mjs 绝对路径>", "--token", bridgeConfig.token] },
+        null,
+        2,
+    );
 
     const saveFFmpegConfig = async () => {
         if (!token) {
@@ -606,6 +635,57 @@ export function AppConfigModal() {
                                 </span>
                             )}
                         </div>
+                    </section>
+                    <section className="mb-5 mt-4 rounded-xl border border-stone-200 bg-stone-50/70 p-3 dark:border-stone-800 dark:bg-stone-900/50">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <div className="text-sm font-medium">Qoder 通道</div>
+                                <div className="mt-1 text-xs text-stone-500">开启后本页通过本地适配器接收 Qoder 的 MCP 指令：Qoder 当大脑写剧本与分镜，本软件负责生成媒体与成片。</div>
+                            </div>
+                            <Switch checked={bridgeConfig.enabled} onChange={handleBridgeEnabled} />
+                        </div>
+                        {bridgeConfig.enabled ? (
+                            <div className="mt-3 space-y-3">
+                                <div className="text-xs leading-5">
+                                    {bridgeStatus === "connected" ? (
+                                        <span className="text-green-600 dark:text-green-400">已连接：Qoder 通道就绪，可以在 Qoder 中驱动漫剧创作。</span>
+                                    ) : bridgeStatus === "connecting" ? (
+                                        <span className="text-orange-600 dark:text-orange-400">连接中：正在连接本地适配器（ws://127.0.0.1:9801）…</span>
+                                    ) : (
+                                        <span className="text-orange-600 dark:text-orange-400">未连接：请确认 Qoder 已注册并启动适配器，页面每 3 秒自动重试。</span>
+                                    )}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Input className="min-w-0 flex-1" value={bridgeConfig.token} readOnly placeholder="开启通道后自动生成" />
+                                    <Button size="small" disabled={!bridgeConfig.token} onClick={() => copyText(bridgeConfig.token, "令牌已复制")}>
+                                        复制令牌
+                                    </Button>
+                                    <Popconfirm title="重新生成令牌？" description="重新生成后旧令牌立即失效，需同步更新 Qoder 中的注册配置。" okText="重新生成" cancelText="取消" onConfirm={handleRegenerateBridgeToken}>
+                                        <Button size="small">重新生成</Button>
+                                    </Popconfirm>
+                                </div>
+                                <Input
+                                    value={bridgeConfig.adapterPath}
+                                    placeholder="适配器脚本绝对路径，例如 D:/infinite-canvas-main/mcp-adapter/drama-mcp.mjs"
+                                    onChange={(event) => {
+                                        setBridgeAdapterPath(event.target.value);
+                                        setBridgeConfig((value) => ({ ...value, adapterPath: event.target.value }));
+                                    }}
+                                />
+                                <div>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-xs text-stone-500">Qoder MCP 注册配置（粘贴到 Qoder 的 MCP 设置）</span>
+                                        <Button size="small" onClick={() => copyText(bridgeRegistrationJson, "注册配置已复制")}>
+                                            复制注册配置
+                                        </Button>
+                                    </div>
+                                    <pre className="mt-1 overflow-x-auto rounded-md border border-stone-200 bg-white p-2 text-xs leading-5 text-stone-700 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">{bridgeRegistrationJson}</pre>
+                                </div>
+                                <div className="text-xs leading-5 text-stone-500">
+                                    使用步骤：① 保持本页开启；② 复制注册配置粘贴到 Qoder 的 MCP 设置并保存；③ Qoder 拉起适配器后本页自动完成连接；④ 在 Qoder 中创作剧本与分镜并驱动生成。注意：仅本机回环通信（ws://127.0.0.1:9801）；需保持漫剧页面打开；https 部署下浏览器会拦截本地 ws 连接；一键成片需登录账号。
+                                </div>
+                            </div>
+                        ) : null}
                     </section>
                     {(!isMimoTtsModel(config.audioModel) || isMimoPresetTtsModel(config.audioModel) || isMimoVoiceCloneModel(config.audioModel)) && !glmTts && !grokTts ? (
                         <Form.Item label="默认音频指令" className="mb-4">
