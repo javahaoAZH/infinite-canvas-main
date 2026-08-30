@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { ChannelModelSelectorModal } from "@/components/channel-model-selector-modal";
 import { GrokTtsVoiceSelect } from "@/components/grok-tts-voice-select";
 import { ModelPicker } from "@/components/model-picker";
+import { VOICE_DIRECTION_GUIDE } from "@/app/(user)/drama/prompts";
 import { fetchImageModels } from "@/services/api/image";
 import { getRenderFFmpegStatus, saveRenderFFmpegPath, type RenderFFmpegStatus } from "@/services/api/render";
 import { fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
@@ -390,6 +391,7 @@ export function AppConfigModal() {
                                                     { label: "APIMart", value: "apimart" },
                                                     { label: "KIE", value: "kie" },
                                                     { label: "MiMo", value: "mimo" },
+                                                    { label: "阿里云百炼", value: "dashscope" },
                                                 ]}
                                                 onChange={(protocol: LocalModelChannel["protocol"]) => patchLocalChannel(channel.id, { protocol, baseUrl: modelChannelDefaultBaseUrls[protocol] })}
                                             />
@@ -610,6 +612,7 @@ export function AppConfigModal() {
                             <Input.TextArea rows={2} value={config.audioInstructions} placeholder="例如：自然、温暖、适合旁白。" onChange={(event) => updateConfig("audioInstructions", event.target.value)} />
                         </Form.Item>
                     ) : null}
+                    <div className="mb-4 text-xs leading-5 text-stone-500">{VOICE_DIRECTION_GUIDE}</div>
                     {effectiveMode === "local" ? (
                         <Form.Item label="系统提示词" className="mb-0">
                             <Input.TextArea rows={3} value={config.systemPrompt} placeholder="例如：你是一位擅长电影感写实摄影的视觉导演。" onChange={(event) => updateConfig("systemPrompt", event.target.value)} />

@@ -99,6 +99,10 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}
+	if service.IsDashScopeChannel(channel) && strings.Contains(upstreamPath, "video-synthesis") {
+		// 百炼视频合成为异步任务，必须显式声明异步模式才能拿到 task_id
+		request.Header.Set("X-DashScope-Async", "enable")
+	}
 	logContext := aiLogContext{
 		StartedAt:       startedAt,
 		Endpoint:        "/videos",
@@ -374,6 +378,11 @@ func transformVideoCreatePayload(payload []byte, request *http.Request, channel 
 			return transformed
 		}
 	}
+	if service.IsDashScopeChannel(channel) {
+		if transformed, ok := transformDashScopeVideoTaskResponse(payload); ok {
+			return transformed
+		}
+	}
 	if isKIEChannel(channel, modelName) && strings.Contains(request.URL.Path, "/jobs/createTask") {
 		if transformed, ok := transformKIECreateVideoResponse(payload, modelName); ok {
 			return transformed
@@ -390,6 +399,11 @@ func transformVideoCreatePayload(payload []byte, request *http.Request, channel 
 func transformVideoStatusPayload(payload []byte, request *http.Request, channel model.ModelChannel, modelName string) []byte {
 	if service.IsGeminiChannel(channel) {
 		if transformed, ok := transformGeminiVideoTaskResponse(payload); ok {
+			return transformed
+		}
+	}
+	if service.IsDashScopeChannel(channel) && strings.Contains(request.URL.Path, "/api/v1/tasks/") {
+		if transformed, ok := transformDashScopeVideoTaskResponse(payload); ok {
 			return transformed
 		}
 	}
@@ -434,6 +448,44 @@ func transformGeminiVideoTaskResponse(payload []byte) ([]byte, bool) {
 	transformed, err := json.Marshal(map[string]any{
 		"id":        name,
 		"task_id":   name,
+		"status":    status,
+		"progress":  progress,
+		"video_url": videoURL,
+		"error":     map[string]any{"message": errorMessage},
+	})
+	return transformed, err == nil
+}
+
+// transformDashScopeVideoTaskResponse 百炼视频任务为异步嵌套结构（output.task_id / task_status / video_url），
+// 规范化为顶层任务结构以复用既有的解析、入库与轮询链路
+func transformDashScopeVideoTaskResponse(payload []byte) ([]byte, bool) {
+	var root map[string]any
+	if len(payload) == 0 || json.Unmarshal(payload, &root) != nil {
+		return nil, false
+	}
+	taskID := readStringPath(root, "output.task_id")
+	taskStatus := strings.ToLower(readStringPath(root, "output.task_status"))
+	videoURL := readStringPath(root, "output.video_url")
+	errorMessage := firstNonEmpty(readStringPath(root, "message"), readStringPath(root, "output.message"))
+	status := "processing"
+	progress := 0
+	switch taskStatus {
+	case "succeeded":
+		if videoURL != "" {
+			status = "completed"
+			progress = 100
+		} else {
+			status = "failed"
+			errorMessage = firstNonEmpty(errorMessage, "百炼视频任务完成但没有返回视频地址")
+		}
+	case "failed", "unknown", "canceled":
+		status = "failed"
+	case "running":
+		progress = 50
+	}
+	transformed, err := json.Marshal(map[string]any{
+		"id":        taskID,
+		"task_id":   taskID,
 		"status":    status,
 		"progress":  progress,
 		"video_url": videoURL,

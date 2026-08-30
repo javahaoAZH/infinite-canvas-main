@@ -1,12 +1,13 @@
 import axios from "axios";
 import { nanoid } from "nanoid";
 
+import { assertDashScopeProxyAvailable, createDashScopeTtsBody, isDashScopeConfig, isDashScopeTtsModel, parseDashScopeAudioUrl } from "@/lib/dashscope";
 import { audioMimeType, isGlmTtsModel, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue, normalizeGlmTtsFormat, normalizeGlmTtsSpeed, normalizeGlmTtsVoice } from "@/lib/audio-generation";
 import { isGrok2APITtsConfig, normalizeGrokTtsFormat, normalizeGrokTtsLanguage, normalizeGrokTtsSpeed, type GrokTtsVoice } from "@/lib/grok-tts";
 import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoiceDesignModel, normalizeMimoTtsFormat, normalizeMimoTtsVoice } from "@/lib/mimo-tts";
 import { geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, isGeminiTtsModel } from "@/lib/gemini";
 import { geminiPcmBase64ToWav, normalizeGeminiTtsVoice } from "@/lib/gemini-tts";
-import { resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
+import { downloadRemoteMedia, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { buildApiUrl, channelIdForActiveModel, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceAudio } from "@/types/media";
@@ -41,12 +42,14 @@ function usesAccountProxy(config: AiConfig) {
 
 function aiApiUrl(config: AiConfig, path: string) {
     if (usesAccountProxy(config)) return `/api/v1${path}`;
+    if (isDashScopeConfig(config)) assertDashScopeProxyAvailable(config);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
 
 function aiHeaders(config: AiConfig) {
     const token = useUserStore.getState().token;
+    if (isDashScopeConfig(config) && !usesAccountProxy(config)) assertDashScopeProxyAvailable(config);
     if (config.channelMode === "remote") {
         return {
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -102,6 +105,14 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, r
             );
             refreshRemoteUser(config);
             return decodeGeminiAudio(response.data);
+        }
+        if (isDashScopeTtsModel(model) && isDashScopeConfig(config, model)) {
+            if (referenceAudio) throw new Error("百炼 TTS 不支持参考音频");
+            assertDashScopeProxyAvailable(config);
+            const response = await axios.post<Record<string, unknown>>(aiApiUrl(config, "/audio/speech"), createDashScopeTtsBody(model, config.audioVoice, prompt), { headers: aiHeaders(config) });
+            const url = parseDashScopeAudioUrl(response.data);
+            refreshRemoteUser(config);
+            return downloadRemoteMedia(url);
         }
         if (isMimoTtsModel(model) && !usesAccountProxy(config)) {
             const format = normalizeMimoTtsFormat(config.mimoTtsFormat);
@@ -188,6 +199,10 @@ async function buildAudioSpeechRequest(config: AiConfig, model: string, prompt: 
         if (referenceAudio) throw new Error("Gemini TTS 不支持参考音频");
         return { model, ...buildGeminiTtsRequest(config, prompt) };
     }
+    if (isDashScopeTtsModel(model) && isDashScopeConfig(config, model)) {
+        if (referenceAudio) throw new Error("百炼 TTS 不支持参考音频");
+        return createDashScopeTtsBody(model, config.audioVoice, prompt);
+    }
     if (isGlmTtsModel(model)) {
         if (prompt.length > 1024) throw new Error("GLM-TTS 文本不能超过 1024 个字符");
         return {
@@ -234,6 +249,7 @@ async function buildAudioSpeechRequest(config: AiConfig, model: string, prompt: 
 
 function audioResponseFormat(config: AiConfig, model: string) {
     if (isGeminiTtsModel(model) && isGeminiConfig(config, model)) return "wav";
+    if (isDashScopeTtsModel(model) && isDashScopeConfig(config, model)) return "mp3";
     if (isGlmTtsModel(model)) return normalizeGlmTtsFormat(config.glmTtsFormat);
     if (isMimoTtsModel(model)) return normalizeMimoTtsFormat(config.mimoTtsFormat);
     if (isGrok2APITtsConfig(config, model)) return normalizeGrokTtsFormat(config.grokTtsFormat);

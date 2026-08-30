@@ -559,6 +559,25 @@ func resolveAIProxyPath(channel model.ModelChannel, modelName string, path strin
 			return service.GeminiOperationPath(strings.TrimPrefix(path, "/videos/"))
 		}
 	}
+	if service.IsDashScopeChannel(channel) {
+		switch path {
+		case "/images/generations", "/images/edits", "/audio/speech":
+			// 百炼图像与 TTS 均走 multimodal-generation 原生接口
+			return "/api/v1/services/aigc/multimodal-generation/generation"
+		case "/videos":
+			return "/api/v1/services/aigc/video-generation/video-synthesis"
+		case "/chat/completions":
+			// 文本模型复用 OpenAI 兼容模式，保持现有请求体格式
+			return "/compatible-mode/v1/chat/completions"
+		}
+		if strings.HasPrefix(path, "/videos/") && !strings.HasSuffix(path, "/content") {
+			taskID := strings.TrimSpace(strings.TrimPrefix(path, "/videos/"))
+			if taskID != "" && !strings.Contains(taskID, "/") {
+				return "/api/v1/tasks/" + url.PathEscape(taskID)
+			}
+		}
+		return path
+	}
 	if service.IsMiMoTTSModelName(modelName) && path == "/audio/speech" {
 		return "/chat/completions"
 	}

@@ -321,8 +321,19 @@ func runCanvasAudioTask(task model.CanvasAudioTask, user model.AuthUser, body []
 		mimeType = strings.TrimSpace(http.DetectContentType(payload))
 	}
 	if strings.Contains(mimeType, "json") {
-		saveFailedCanvasAudioTask(task, "音频接口没有返回音频文件", string(payload))
-		return
+		audioURL := dashScopeTtsAudioURL(payload)
+		if audioURL == "" {
+			saveFailedCanvasAudioTask(task, "音频接口没有返回音频文件", string(payload))
+			return
+		}
+		audioData, audioMIMEType, err := downloadCanvasAudioURL(audioURL)
+		if err != nil {
+			log.Printf("download canvas audio failed: task=%s err=%v", task.ID, err)
+			saveFailedCanvasAudioTask(task, "音频文件下载失败："+err.Error(), string(payload))
+			return
+		}
+		payload = audioData
+		mimeType = audioMIMEType
 	}
 	if task.ContentType != "" && strings.HasPrefix(task.ContentType, "audio/") {
 		mimeType = task.ContentType
@@ -373,6 +384,41 @@ func saveFailedCanvasAudioTask(task model.CanvasAudioTask, message string, detai
 	task.Error = firstNonEmpty(message, "音频生成失败")
 	task.ErrorDetail = detail
 	_, _ = service.SaveCanvasAudioTask(task)
+}
+
+// dashScopeTtsAudioURL 百炼 TTS 返回 application/json，音频地址在 output.audio.url
+func dashScopeTtsAudioURL(payload []byte) string {
+	var root struct {
+		Output struct {
+			Audio struct {
+				URL string `json:"url"`
+			} `json:"audio"`
+		} `json:"output"`
+	}
+	if len(payload) == 0 || json.Unmarshal(payload, &root) != nil {
+		return ""
+	}
+	return strings.TrimSpace(root.Output.Audio.URL)
+}
+
+func downloadCanvasAudioURL(audioURL string) ([]byte, string, error) {
+	response, err := http.Get(audioURL)
+	if err != nil {
+		return nil, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, "", errors.New(response.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64*1024*1024))
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType := strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0])
+	if !strings.HasPrefix(mimeType, "audio/") {
+		mimeType = "audio/mpeg"
+	}
+	return data, mimeType, nil
 }
 
 func readCanvasTaskAIRequest(r *http.Request, fallbackEndpoint string) ([]byte, string, string, string, string, string, string, string, string, error) {
@@ -678,7 +724,8 @@ func collectImageCandidates(value any, depth int, includeChatImages bool) []stri
 		}
 		return result
 	case map[string]any:
-		keys := []string{"url", "b64_json", "partial_image_b64", "image_url", "image", "image_data", "base64", "inlineData", "parts", "content", "candidates", "result", "response", "data", "output"}
+		// choices/message/results 兼容百炼 multimodal-generation 结构（output.choices[].message.content[].image / output.results[].url）
+		keys := []string{"url", "b64_json", "partial_image_b64", "image_url", "image", "image_data", "base64", "inlineData", "parts", "content", "candidates", "result", "response", "data", "output", "choices", "message", "results"}
 		if includeChatImages {
 			keys = append(keys, "choices", "message", "images")
 		}

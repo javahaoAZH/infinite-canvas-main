@@ -10,7 +10,7 @@ import { useUserStore } from "@/stores/use-user-store";
 
 export type LocalModelChannel = {
     id: string;
-    protocol: "openai" | "gemini" | "grok2api" | "metaso" | "apimart" | "kie" | "mimo";
+    protocol: "openai" | "gemini" | "grok2api" | "metaso" | "apimart" | "kie" | "mimo" | "dashscope";
     name: string;
     baseUrl: string;
     apiKey: string;
@@ -230,6 +230,9 @@ function preferredModel(models: string[], predicate: (model: string) => boolean)
 
 function isVideoModelName(model: string) {
     const value = model.toLowerCase();
+    // 万相视频系列令牌；含 "-image"（且不是 image-to-video 变体）的归为图像模型；视频变体由 i2v 命中，不含宽泛系列令牌以免误判文生图模型
+    const wanVideo = ["wan2-5", "wan2.5", "wan2-6", "wan2.6", "wan2-7", "wan2.7", "wan/2-5", "wan/2-6", "wan/2-7"].some((token) => value.includes(token)) || value.includes("i2v");
+    if (wanVideo && /-image(?!-to-video)/.test(value)) return false;
     return (
         value.includes("video") ||
         value.includes("seedance") ||
@@ -249,18 +252,11 @@ function isVideoModelName(model: string) {
         value.includes("veo3.1") ||
         value.includes("veo-3.1") ||
         value.includes("infinitalk") ||
-        value.includes("wan2-5") ||
-        value.includes("wan2.5") ||
-        value.includes("wan2-6") ||
-        value.includes("wan2.6") ||
-        value.includes("wan2-7") ||
-        value.includes("wan2.7") ||
+        wanVideo ||
         value.includes("wan2-7-r2v") ||
         value.includes("wan2.7-r2v") ||
         value.includes("wan2-7-videoedit") ||
         value.includes("wan2.7-videoedit") ||
-        value.includes("wan/2-5") ||
-        value.includes("wan/2-6") ||
         value.includes("wan/2-7-text-to-video") ||
         value.includes("wan/2-7-image-to-video") ||
         value.includes("wan/2-7-videoedit") ||

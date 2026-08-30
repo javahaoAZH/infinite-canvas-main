@@ -338,6 +338,10 @@ func BuildModelChannelURL(channel model.ModelChannel, path string) string {
 	if IsMiniMaxChannel(channel) {
 		return baseURL + path
 	}
+	if IsDashScopeChannel(channel) {
+		// 百炼原生接口路径自带 /api/v1 或 /compatible-mode 前缀，不追加 /v1
+		return baseURL + path
+	}
 	lowerBaseURL := strings.ToLower(baseURL)
 	if !strings.HasSuffix(lowerBaseURL, "/v1") && !strings.HasSuffix(lowerBaseURL, "/api/v3") && !strings.HasSuffix(lowerBaseURL, "/api/plan/v3") && !strings.HasSuffix(lowerBaseURL, "/api/paas/v4") {
 		baseURL += "/v1"
@@ -518,7 +522,12 @@ func fetchAdminChannelModels(channel model.ModelChannel) ([]string, error) {
 		sort.Strings(result)
 		return result, nil
 	}
-	request, err := http.NewRequest(http.MethodGet, BuildModelChannelURL(channel, "/models"), nil)
+	modelsPath := "/models"
+	if IsDashScopeChannel(channel) {
+		// 百炼原生协议根地址不提供模型列表，需使用 OpenAI 兼容模式路径
+		modelsPath = "/compatible-mode/v1/models"
+	}
+	request, err := http.NewRequest(http.MethodGet, BuildModelChannelURL(channel, modelsPath), nil)
 	if err != nil {
 		return nil, err
 	}

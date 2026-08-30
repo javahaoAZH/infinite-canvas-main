@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import { isMiniMaxChannel, miniMaxModels } from "@/lib/minimax-video";
+import { assertDashScopeProxyAvailable, createDashScopeImageBody, isDashScopeConfig, parseDashScopeImageUrls } from "@/lib/dashscope";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
 import { isMimoChannel, mimoModels } from "@/lib/mimo-tts";
@@ -535,12 +536,14 @@ function usesAccountProxy(config: AiConfig) {
 
 export function aiApiUrl(config: AiConfig, path: string) {
     if (usesAccountProxy(config)) return `/api/v1${path}`;
+    if (isDashScopeConfig(config)) assertDashScopeProxyAvailable(config);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
 
 export function aiHeaders(config: AiConfig, contentType?: string) {
     const token = useUserStore.getState().token;
+    if (isDashScopeConfig(config) && !usesAccountProxy(config)) assertDashScopeProxyAvailable(config);
     if (config.channelMode === "remote" && !token) throw new Error("请先登录后再使用云端渠道");
     if (config.channelMode === "remote") {
         return {
@@ -650,10 +653,41 @@ function withSystemMessage(config: AiConfig, messages: ChatCompletionMessage[]) 
     return systemPrompt ? [{ role: "system" as const, content: systemPrompt }, ...messages] : messages;
 }
 
+// 百炼原生渠道：前端组装 multimodal-generation 请求体，后端仅做路径映射
+async function requestDashScopeImageSingle(config: AiConfig, prompt: string, references: ReferenceImage[], params: ImageRequestParams): Promise<GeneratedImage[]> {
+    assertDashScopeProxyAvailable(config);
+    const referenceDataUrls = references.length ? await Promise.all(references.map((image) => imageToDataUrl(image))) : [];
+    const endpoint = referenceDataUrls.length ? "/images/edits" : "/images/generations";
+    const body = createDashScopeImageBody(config, config.model, withPromptGuard(config, withSystemPrompt(config, prompt)), referenceDataUrls, params.size, params.n);
+    return requestAndParseImages(
+        config,
+        endpoint,
+        body,
+        params.timeoutSeconds,
+        () =>
+            requestWithTransientRetry(() =>
+                withTimeout(params.timeoutSeconds, (signal) =>
+                    fetch(aiApiUrl(config, endpoint), {
+                        method: "POST",
+                        headers: aiHeaders(config, "application/json"),
+                        body: JSON.stringify(body),
+                        signal,
+                    }),
+                ),
+            ),
+        async (response) => {
+            const payload = (await response.json()) as unknown;
+            const images = parseDashScopeImageUrls(payload).map((dataUrl) => ({ id: nanoid(), dataUrl }));
+            return { images, responseBody: stringifyLogPayload(payload) };
+        },
+    );
+}
+
 async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: number; seedCount?: number }, prompt: string, params: ImageRequestParams): Promise<GeneratedImage[]> {
     const mime = IMAGE_MIME;
 
     if (isGeminiConfig(config)) return requestGeminiImageSingle(config, prompt, [], params);
+    if (isDashScopeConfig(config)) return requestDashScopeImageSingle(config, prompt, [], params);
 
     // 针对 Agnes 渠道文生图模型定制精简 Payload，避免传入官方文档未声明的 seed 参数。
     if (isAgnesImageModel(config.model)) {
@@ -779,6 +813,7 @@ async function requestGrokImageEditSingle(config: AiConfig, prompt: string, refe
 
 async function requestImageEditSingle(config: AiConfig, prompt: string, references: ReferenceImage[], params: ImageRequestParams): Promise<GeneratedImage[]> {
     if (isGeminiConfig(config)) return requestGeminiImageSingle(config, prompt, references, params);
+    if (isDashScopeConfig(config)) return requestDashScopeImageSingle(config, prompt, references, params);
     if (isGrok2APIImageConfig(config)) return requestGrokImageEditSingle(config, prompt, references, params);
 
     const mime = IMAGE_MIME;
@@ -962,7 +997,7 @@ async function requestImages(config: AiConfig & { seedIndex?: number; seedCount?
     assertImageReferencesSupported(config.model, references);
     const params = createImageRequestParams(config);
     const inputImageDataUrls = references.length ? await Promise.all(references.map((image) => imageToDataUrl(image))) : [];
-    const useConcurrentSingleRequests = isGeminiConfig(config) || config.apiMode === "responses" || config.apiMode === "chat" || config.codexCli || config.streamImages || isZhipuImageModel(config.model);
+    const useConcurrentSingleRequests = isGeminiConfig(config) || isDashScopeConfig(config) || config.apiMode === "responses" || config.apiMode === "chat" || config.codexCli || config.streamImages || isZhipuImageModel(config.model);
     if (params.n > 1 && useConcurrentSingleRequests) {
         const results = await Promise.allSettled(Array.from({ length: params.n }, () => requestImages({ ...config, count: "1" }, prompt, references)));
         const images = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
@@ -973,8 +1008,8 @@ async function requestImages(config: AiConfig & { seedIndex?: number; seedCount?
     if (references.length && isAgnesImageModel(config.model)) {
         return requestAgnesImageEdit(config, prompt, references, params);
     }
-    if (config.apiMode === "chat" && !isGeminiConfig(config) && !isZhipuImageModel(config.model)) return requestChatImagesSingle(config, prompt, inputImageDataUrls, params);
-    if (config.apiMode === "responses" && !isGeminiConfig(config) && !isZhipuImageModel(config.model)) return requestResponsesSingle(config, prompt, inputImageDataUrls, params);
+    if (config.apiMode === "chat" && !isGeminiConfig(config) && !isDashScopeConfig(config) && !isZhipuImageModel(config.model)) return requestChatImagesSingle(config, prompt, inputImageDataUrls, params);
+    if (config.apiMode === "responses" && !isGeminiConfig(config) && !isDashScopeConfig(config) && !isZhipuImageModel(config.model)) return requestResponsesSingle(config, prompt, inputImageDataUrls, params);
     return references.length ? requestImageEditSingle(config, prompt, references, params) : requestImageGenerationSingle(config, prompt, params);
 }
 
@@ -1059,6 +1094,16 @@ async function createCanvasImageTaskRequest(config: AiConfig & { seedIndex?: num
             method: "POST",
             headers: jsonHeaders,
             body: JSON.stringify({ endpoint: references.length ? "/images/edits" : "/images/generations", ...meta, request: body }),
+        };
+    }
+    if (isDashScopeConfig(config)) {
+        assertDashScopeProxyAvailable(config);
+        const referenceDataUrls = references.length ? await Promise.all(references.map((image) => imageToDataUrl(image))) : [];
+        const body = createDashScopeImageBody(config, config.model, withPromptGuard(config, withSystemPrompt(config, prompt)), referenceDataUrls, params.size, 1);
+        return {
+            method: "POST",
+            headers: jsonHeaders,
+            body: JSON.stringify({ endpoint: referenceDataUrls.length ? "/images/edits" : "/images/generations", ...meta, request: body }),
         };
     }
     if (references.length && isAgnesImageModel(config.model)) {

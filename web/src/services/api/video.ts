@@ -1,5 +1,6 @@
 import axios from "axios";
 
+import { assertDashScopeProxyAvailable, compressImageToJpegDataUrl, createDashScopeVideoBody, DASHSCOPE_VIDEO_MAX_WAIT_MS, DASHSCOPE_VIDEO_POLL_INTERVAL_MS, isDashScopeConfig } from "@/lib/dashscope";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { isMiniMaxH3Config, normalizeMiniMaxH3Duration, normalizeMiniMaxH3Ratio, normalizeMiniMaxH3Resolution } from "@/lib/minimax-video";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, geminiOperationUrl, isGeminiConfig, isGeminiVideoModel } from "@/lib/gemini";
@@ -7,7 +8,7 @@ import { isGeminiVeo31Model, normalizeGeminiVideoDuration, normalizeGeminiVideoR
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio } from "@/lib/seedance-video";
 import { isKIEGrokVideoModel, isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
 import { isAgnesVideoV25Model, isCogVideoX3Model, modelKey, normalizeCogVideoX3Duration, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
-import { resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
+import { downloadRemoteMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
 import { imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
 import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig, type VideoElementReference } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -40,6 +41,7 @@ function usesAccountProxy(config: AiConfig) {
 
 function aiApiUrl(config: AiConfig, path: string) {
     if (usesAccountProxy(config)) return `/api/v1${path}`;
+    if (isDashScopeConfig(config)) assertDashScopeProxyAvailable(config);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
@@ -78,6 +80,7 @@ function agnesBaseUrl(baseUrl: string) {
 
 function aiHeaders(config: AiConfig) {
     const token = useUserStore.getState().token;
+    if (isDashScopeConfig(config) && !usesAccountProxy(config)) assertDashScopeProxyAvailable(config);
     if (config.channelMode === "remote" && !token) throw new Error("请先登录后再使用云端渠道");
     if (config.channelMode === "remote") return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };
     if (token) return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-User-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };
@@ -149,10 +152,13 @@ export async function pollCreatedVideoGenerationTask(config: AiConfig, task: Vid
         ? () => directPoll(config, directProvider, pollId)
         : async () => unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config), params: usesAccountProxy(config) ? { model } : undefined })).data);
     let completed: VideoResponse | null = null;
+    const dashscope = isDashScopeConfig(config, model);
+    const pollIntervalMs = dashscope ? DASHSCOPE_VIDEO_POLL_INTERVAL_MS : VIDEO_POLL_INTERVAL_MS;
     try {
         if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
         for (; ;) {
-            const video = await cacheProtectedGeminiVideo(config, model, await pollOnce());
+            if (dashscope && Date.now() > startedAt + DASHSCOPE_VIDEO_MAX_WAIT_MS) throw new VideoRequestError("百炼视频生成超时（20 分钟），请稍后在任务列表中查看结果", task);
+            const video = await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce()));
             onPoll?.(video);
             if (isFailedVideoStatus(video.status)) throw new VideoRequestError(video.error?.message || "视频生成失败", video);
             if (typeof video.progress === "number") onProgress?.(video.progress, video);
@@ -160,7 +166,7 @@ export async function pollCreatedVideoGenerationTask(config: AiConfig, task: Vid
                 completed = video;
                 break;
             }
-            await new Promise((resolve) => setTimeout(resolve, VIDEO_POLL_INTERVAL_MS));
+            await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
         }
         const videoUrl = completed?.video_url || completed?.url || "";
         if (!videoUrl) throw new VideoRequestError("视频生成完成但没有返回视频地址", completed);
@@ -183,7 +189,7 @@ export async function pollVideoGenerationTaskStatus(config: AiConfig, task: Vide
     const result = directProvider
         ? await (await import("@/services/api/direct-ai")).pollDirectVideoTask(config, directProvider, pollId)
         : unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config), params: usesAccountProxy(config) ? { model } : undefined })).data);
-    return cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result));
+    return cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result)));
 }
 
 export async function listVideoGenerationTasks(config: AiConfig) {
@@ -260,6 +266,7 @@ async function createAgnesVideoV25RequestBody(config: AiConfig, model: string, p
 
 async function createVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
     const size = normalizeVideoSize(config.size);
+    if (isDashScopeConfig(config, model)) return createDashScopeVideoRequestBody(config, model, prompt, input);
     if (isGeminiVideoModel(model) && isGeminiConfig(config, model)) return createGeminiVeoRequestBody(config, model, prompt, input);
     if (isGrok2APIVideoConfig(config, model)) return createGrok2APIVideoRequestBody(config, model, prompt, input);
     if (isMiniMaxH3Config(config, model)) return createMiniMaxH3VideoRequestBody(config, model, prompt, input);
@@ -676,6 +683,7 @@ function unwrapVideoResponse(payload: ApiVideoResponse): VideoResponse {
 
 function unwrapVideoResponseForConfig(config: AiConfig, model: string, payload: ApiVideoResponse) {
     if (isGeminiVideoModel(model) && isGeminiConfig(config, model)) return normalizeGeminiVideoResponse(payload);
+    if (isDashScopeConfig(config, model)) return normalizeDashScopeVideoResponse(payload);
     if (isMiniMaxH3Config(config, model)) {
         const root = payload as unknown as Record<string, unknown>;
         const task = root.task && typeof root.task === "object" ? root.task as Record<string, unknown> : null;
@@ -691,6 +699,46 @@ function unwrapVideoResponseForConfig(config: AiConfig, model: string, payload: 
         }
     }
     return unwrapVideoResponse(payload);
+}
+
+// 百炼图生视频：首帧必填，压缩为 ≤4MB JPEG 后以 data URL 作为 img_url 传入
+async function createDashScopeVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
+    assertDashScopeProxyAvailable(config);
+    // drama 等场景把分镜图放在普通参考图里，回退取第一张作为首帧
+    const frame = input.firstFrame || input.references[0];
+    if (!frame) throw new VideoRequestError("百炼图生视频必须提供首帧图片，请先添加首帧");
+    const firstFrame = await compressImageToJpegDataUrl(await imageToDataUrl(frame));
+    return createDashScopeVideoBody(model, prompt, firstFrame);
+}
+
+// 百炼原生异步任务响应：output.task_id / output.task_status / output.video_url
+function normalizeDashScopeVideoResponse(payload: ApiVideoResponse): VideoResponse {
+    const root = payload as unknown as Record<string, unknown>;
+    if (typeof root.code === "number") return unwrapVideoResponse(payload);
+    // 后端已将原生异步结构规范化为顶层任务结构，直接按通用响应解析，避免误读为永远 processing
+    if (typeof root.status === "string" || typeof root.task_status === "string") return unwrapVideoResponse(payload);
+    const output = root.output && typeof root.output === "object" ? root.output as Record<string, unknown> : {};
+    const status = firstString(output.task_status).toLowerCase();
+    const message = firstString(root.message, output.message);
+    const completed = status === "succeeded";
+    const failed = ["failed", "unknown", "canceled"].includes(status);
+    return normalizeVideoResponse({
+        ...root,
+        id: firstString(output.task_id),
+        task_id: firstString(output.task_id),
+        status: completed ? "completed" : failed ? "failed" : "processing",
+        progress: completed ? 100 : status === "running" ? 50 : 0,
+        video_url: firstString(output.video_url),
+        ...(message ? { error: { message } } : {}),
+    });
+}
+
+// 百炼视频地址为临时 OSS 链接：完成后立即下载到本地/对象存储，避免过期失效
+async function cacheProtectedDashScopeVideo(config: AiConfig, model: string, task: VideoResponse) {
+    const url = task.video_url || task.url || "";
+    if (!isDashScopeConfig(config, model) || !isCompletedVideoStatus(task.status) || task.storageKey || !url) return task;
+    const media = await uploadMediaFile(await downloadRemoteMedia(url), "generated-video");
+    return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey };
 }
 
 async function createGeminiVeoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
