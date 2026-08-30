@@ -7,7 +7,8 @@ import { ChannelModelSelectorModal } from "@/components/channel-model-selector-m
 import { GrokTtsVoiceSelect } from "@/components/grok-tts-voice-select";
 import { ModelPicker } from "@/components/model-picker";
 import { VOICE_DIRECTION_GUIDE } from "@/app/(user)/drama/prompts";
-import { getBridgeSnapshot, loadBridgeConfig, onBridgeStatusChange, regenerateBridgeToken, setBridgeAdapterPath, setBridgeEnabled, type BridgeStatus } from "@/app/(user)/drama/services/drama-bridge";
+import { APP_DATA_CHANGED_EVENT } from "@/app/(user)/drama/services/bridge-refresh";
+import { fetchQoderChannelStatus, getBridgeSnapshot, loadBridgeConfig, onBridgeStatusChange, regenerateBridgeToken, setBridgeAdapterPath, setBridgeEnabled, type QoderChannelStatus } from "@/app/(user)/drama/services/drama-bridge";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { fetchImageModels } from "@/services/api/image";
 import { getRenderFFmpegStatus, saveRenderFFmpegPath, type RenderFFmpegStatus } from "@/services/api/render";
@@ -58,7 +59,8 @@ export function AppConfigModal() {
     const [savingFFmpegPath, setSavingFFmpegPath] = useState(false);
     const copyText = useCopyText();
     const [bridgeConfig, setBridgeConfig] = useState(() => loadBridgeConfig());
-    const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>(() => getBridgeSnapshot().status);
+    const [bridgeSnapshot, setBridgeSnapshot] = useState(() => getBridgeSnapshot());
+    const [qoderChannelStatus, setQoderChannelStatus] = useState<QoderChannelStatus | null>(null);
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
@@ -155,11 +157,33 @@ export function AppConfigModal() {
         };
     }, [isConfigOpen, token]);
 
-    // Qoder 通道状态订阅 + 弹窗打开时刷新本地配置（令牌/路径可能在他处变化）
-    useEffect(() => onBridgeStatusChange((snapshot) => setBridgeStatus(snapshot.status)), []);
+    // Qoder 通道状态订阅 + 弹窗打开时刷新本地配置（令牌/路径可能在他处变化）与后端自动注册状态
+    useEffect(() => onBridgeStatusChange(setBridgeSnapshot), []);
 
     useEffect(() => {
-        if (isConfigOpen) setBridgeConfig(loadBridgeConfig());
+        if (!isConfigOpen) return;
+        setBridgeConfig(loadBridgeConfig());
+        let canceled = false;
+        void fetchQoderChannelStatus()
+            .then((status) => {
+                if (!canceled) setQoderChannelStatus(status);
+            })
+            .catch(() => { });
+        return () => {
+            canceled = true;
+        };
+    }, [isConfigOpen]);
+
+    // 桥接工具变更后端数据（app-data-changed）时，弹窗打开期间重读自动注册状态
+    useEffect(() => {
+        if (!isConfigOpen) return;
+        const reload = () => {
+            void fetchQoderChannelStatus()
+                .then(setQoderChannelStatus)
+                .catch(() => { });
+        };
+        window.addEventListener(APP_DATA_CHANGED_EVENT, reload);
+        return () => window.removeEventListener(APP_DATA_CHANGED_EVENT, reload);
     }, [isConfigOpen]);
 
     const handleBridgeEnabled = (enabled: boolean) => {
@@ -177,6 +201,32 @@ export function AppConfigModal() {
         { command: "node", args: [bridgeConfig.adapterPath.trim() || "<mcp-adapter/drama-mcp.mjs 绝对路径>", "--token", bridgeConfig.token] },
         null,
         2,
+    );
+
+    // exe 模式已自动注册时弱化手动注册区块（折叠 + 降透明度，仍保留作为降级路径）
+    const bridgeAutoRegistered = qoderChannelStatus?.mode === "exe" && qoderChannelStatus.registered === true;
+
+    // 手动注册降级区块：适配器路径输入 + 注册配置 JSON（自动注册生效时折叠弱化）
+    const bridgeManualRegistrationBlock = (
+        <>
+            <Input
+                value={bridgeConfig.adapterPath}
+                placeholder="适配器脚本绝对路径，例如 D:/infinite-canvas-main/mcp-adapter/drama-mcp.mjs"
+                onChange={(event) => {
+                    setBridgeAdapterPath(event.target.value);
+                    setBridgeConfig((value) => ({ ...value, adapterPath: event.target.value }));
+                }}
+            />
+            <div>
+                <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-stone-500">Qoder MCP 注册配置（粘贴到 Qoder 的 MCP 设置）</span>
+                    <Button size="small" onClick={() => copyText(bridgeRegistrationJson, "注册配置已复制")}>
+                        复制注册配置
+                    </Button>
+                </div>
+                <pre className="mt-1 overflow-x-auto rounded-md border border-stone-200 bg-white p-2 text-xs leading-5 text-stone-700 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">{bridgeRegistrationJson}</pre>
+            </div>
+        </>
     );
 
     const saveFFmpegConfig = async () => {
@@ -647,12 +697,16 @@ export function AppConfigModal() {
                         {bridgeConfig.enabled ? (
                             <div className="mt-3 space-y-3">
                                 <div className="text-xs leading-5">
-                                    {bridgeStatus === "connected" ? (
+                                    {bridgeSnapshot.status === "connected" ? (
                                         <span className="text-green-600 dark:text-green-400">已连接：Qoder 通道就绪，可以在 Qoder 中驱动漫剧创作。</span>
-                                    ) : bridgeStatus === "connecting" ? (
+                                    ) : bridgeSnapshot.status === "connecting" ? (
                                         <span className="text-orange-600 dark:text-orange-400">连接中：正在连接本地适配器（ws://127.0.0.1:9801）…</span>
+                                    ) : bridgeSnapshot.registered === "ok" ? (
+                                        <span className="text-green-600 dark:text-green-400">已自动注册到 Qoder，等待热加载后即可使用。</span>
+                                    ) : bridgeSnapshot.registered === "failed" ? (
+                                        <span className="text-orange-600 dark:text-orange-400">自动注册失败：{bridgeSnapshot.registerError || "未知错误"}，可复制注册配置手动添加。</span>
                                     ) : (
-                                        <span className="text-orange-600 dark:text-orange-400">未连接：请确认 Qoder 已注册并启动适配器，页面每 3 秒自动重试。</span>
+                                        <span className="text-orange-600 dark:text-orange-400">等待 Qoder 拉起适配器…（页面每 3 秒自动重试）</span>
                                     )}
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2">
@@ -664,23 +718,14 @@ export function AppConfigModal() {
                                         <Button size="small">重新生成</Button>
                                     </Popconfirm>
                                 </div>
-                                <Input
-                                    value={bridgeConfig.adapterPath}
-                                    placeholder="适配器脚本绝对路径，例如 D:/infinite-canvas-main/mcp-adapter/drama-mcp.mjs"
-                                    onChange={(event) => {
-                                        setBridgeAdapterPath(event.target.value);
-                                        setBridgeConfig((value) => ({ ...value, adapterPath: event.target.value }));
-                                    }}
-                                />
-                                <div>
-                                    <div className="flex items-center justify-between gap-2">
-                                        <span className="text-xs text-stone-500">Qoder MCP 注册配置（粘贴到 Qoder 的 MCP 设置）</span>
-                                        <Button size="small" onClick={() => copyText(bridgeRegistrationJson, "注册配置已复制")}>
-                                            复制注册配置
-                                        </Button>
-                                    </div>
-                                    <pre className="mt-1 overflow-x-auto rounded-md border border-stone-200 bg-white p-2 text-xs leading-5 text-stone-700 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">{bridgeRegistrationJson}</pre>
-                                </div>
+                                {bridgeAutoRegistered ? (
+                                    <details className="opacity-60">
+                                        <summary className="cursor-pointer select-none text-xs text-stone-500">自动注册已生效：手动注册配置已折叠（仅作降级路径）</summary>
+                                        <div className="mt-2 space-y-3">{bridgeManualRegistrationBlock}</div>
+                                    </details>
+                                ) : (
+                                    bridgeManualRegistrationBlock
+                                )}
                                 <div className="text-xs leading-5 text-stone-500">
                                     使用步骤：① 保持本页开启；② 复制注册配置粘贴到 Qoder 的 MCP 设置并保存；③ Qoder 拉起适配器后本页自动完成连接；④ 在 Qoder 中创作剧本与分镜并驱动生成。注意：仅本机回环通信（ws://127.0.0.1:9801）；需保持漫剧页面打开；https 部署下浏览器会拦截本地 ws 连接；一键成片需登录账号。
                                 </div>

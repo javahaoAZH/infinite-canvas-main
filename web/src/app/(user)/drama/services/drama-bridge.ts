@@ -4,23 +4,35 @@
 import { nanoid } from "nanoid";
 
 import { ART_STYLES, DRAMA_SKILL_CATALOG, GENRE_CARDS, SCENE_PRESETS, resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
+import { notifyDataChanged, registerRefresh } from "@/app/(user)/drama/services/bridge-refresh";
 import { applyStructuredScript, createDramaRender, updateDramaShots } from "@/app/(user)/drama/services/drama-generation";
 import { reviewShots } from "@/app/(user)/drama/services/drama-review";
 import { DEFAULT_DIRECTOR_OPTIONS } from "@/app/(user)/drama/services/director-planner";
 import { maybeRestartDirector, startDirector } from "@/app/(user)/drama/services/director-runner";
+import { apiGet, apiPost } from "@/services/api/request";
 import { getRenderTask, type RenderTaskResponse } from "@/services/api/render";
-import { getEffectiveConfig } from "@/stores/use-config-store";
+import { getEffectiveConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useDirectorStore, type DirectorPlanOptions } from "@/stores/use-director-store";
 import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type BridgeStatus = "disconnected" | "connecting" | "connected";
+export type BridgeRegistered = "ok" | "failed" | "";
 export type DramaBridgeConfig = { enabled: boolean; token: string; adapterPath: string };
-export type BridgeSnapshot = { enabled: boolean; status: BridgeStatus };
+export type BridgeSnapshot = { enabled: boolean; status: BridgeStatus; registered: BridgeRegistered; registerError: string };
+export type QoderChannelStatus = { supported: boolean; registered: boolean; mode: "exe" | "node" | "unsupported"; mcpJsonPath: string; executablePath: string };
+
+// 查询后端自动注册状态（公共接口，无需登录态）
+export function fetchQoderChannelStatus() {
+    return apiGet<QoderChannelStatus>("/api/qoder-channel/status");
+}
 
 const BRIDGE_STORAGE_KEY = "infinite-canvas:drama_bridge";
 const BRIDGE_WS_URL = "ws://127.0.0.1:9801";
 const RECONNECT_INTERVAL_MS = 3000;
+// drama_api_request 限制：请求体 ≤2MB，响应序列化 >1MB 截断
+const API_REQUEST_MAX_BODY_BYTES = 2 * 1024 * 1024;
+const API_RESPONSE_MAX_CHARS = 1024 * 1024;
 
 type BridgeInboundMessage = { type?: string; id?: string; tool?: string; args?: Record<string, unknown> };
 
@@ -56,12 +68,15 @@ let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let connectWanted = false;
 let status: BridgeStatus = "disconnected";
+// 自动注册（后端写 ~/.qoder/mcp.json）结果：fire-and-forget 请求回填，经 notify() 暴露给 UI
+let registered: BridgeRegistered = "";
+let registerError = "";
 // 最近一次成片任务（内存态）：drama_get_project 的 renderUrl 从这里取，仅 http(s) 返回
 let lastRenderTask: RenderTaskResponse | null = null;
 const listeners = new Set<(snapshot: BridgeSnapshot) => void>();
 
 export function getBridgeSnapshot(): BridgeSnapshot {
-    return { enabled: connectWanted, status };
+    return { enabled: connectWanted, status, registered, registerError };
 }
 
 export function onBridgeStatusChange(listener: (snapshot: BridgeSnapshot) => void): () => void {
@@ -136,11 +151,27 @@ function openSocket() {
     };
 }
 
+// fire-and-forget 自动注册：请求结果写入快照 registered/registerError；开关行为本身不依赖该请求成功
+function requestQoderChannelRegistration(enabled: boolean, token: string) {
+    void apiPost<QoderChannelStatus>("/api/qoder-channel", { enabled, token })
+        .then(() => {
+            registered = enabled ? "ok" : "";
+            registerError = "";
+            notify();
+        })
+        .catch((error) => {
+            registered = "failed";
+            registerError = error instanceof Error && error.message ? error.message : "注册请求失败";
+            notify();
+        });
+}
+
 export function setBridgeEnabled(enabled: boolean) {
     const config = loadBridgeConfig();
     if (enabled && !config.token) config.token = generateToken();
     config.enabled = enabled;
     saveBridgeConfig(config);
+    requestQoderChannelRegistration(enabled, config.token);
     if (enabled) {
         connectWanted = true;
         openSocket();
@@ -164,6 +195,8 @@ export function regenerateBridgeToken(): string {
     const config = loadBridgeConfig();
     config.token = generateToken();
     saveBridgeConfig(config);
+    // 新令牌需重写注册条目（条目 args 内嵌令牌）
+    requestQoderChannelRegistration(true, config.token);
     if (connectWanted) {
         // 换令牌后立即用新令牌重连
         closeSocket();
@@ -221,7 +254,7 @@ function lastRenderUrl(): string {
     return /^https?:\/\//.test(url) ? url : "";
 }
 
-// 14 个 MCP 工具的页面侧处理器：全部经 store action / services 函数写数据（绝不直接改内存对象），React 界面经 store 订阅实时刷新
+// 16 个 MCP 工具的页面侧处理器：全部经 store action / services 函数写数据（绝不直接改内存对象），React 界面经 store 订阅实时刷新
 const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> = {
     // 1. 项目列表（按 updatedAt 倒序）
     drama_list_projects: () => ({
@@ -431,7 +464,72 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         const url = [task.url, task.video_url].find((value) => typeof value === "string" && /^https?:\/\//.test(value)) || "";
         return { status: task.status, progress: task.progress, ...(url ? { url } : {}) };
     },
+
+    // 15. 通用后端接口代理（同源 /api，带当前登录态）：返回后端原始 {code, data, msg} envelope
+    drama_api_request: async (args) => {
+        const method = (typeof args.method === "string" ? args.method : "").toUpperCase();
+        if (method !== "GET" && method !== "POST" && method !== "PUT" && method !== "DELETE") {
+            throw new Error(`不支持的 method：${String(args.method || "")}，可选 GET / POST / PUT / DELETE`);
+        }
+        const path = typeof args.path === "string" ? args.path : "";
+        if (!path.startsWith("/api/")) throw new Error("path 必须以 /api/ 开头");
+        if (path.includes("://")) throw new Error("path 不得包含 scheme 或主机名");
+        if (path.includes("..")) throw new Error("path 不得包含 ..");
+        const headers: Record<string, string> = {};
+        const token = useUserStore.getState().token;
+        if (token) headers.Authorization = `Bearer ${token}`;
+        let body: string | undefined;
+        if (method === "POST" || method === "PUT") {
+            body = args.body === undefined ? "{}" : JSON.stringify(args.body);
+            if (new TextEncoder().encode(body).length > API_REQUEST_MAX_BODY_BYTES) throw new Error("请求体过大：超过 2MB 上限，请减小后重试");
+            headers["Content-Type"] = "application/json";
+        }
+        let response: Response;
+        try {
+            response = await fetch(path, { method, headers, body });
+        } catch {
+            throw new Error("后端接口请求失败，请确认后端服务已启动");
+        }
+        const raw = await response.text();
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(raw);
+        } catch {
+            parsed = undefined;
+        }
+        if (method !== "GET" && response.ok) notifyDataChanged(path);
+        if (parsed === undefined || parsed === null) {
+            return { httpStatus: response.status, note: "响应不是 JSON，已返回原始文本" + (raw.length > API_RESPONSE_MAX_CHARS ? "（超过 1MB，已截断）" : ""), text: raw.slice(0, API_RESPONSE_MAX_CHARS) };
+        }
+        const serialized = JSON.stringify(parsed);
+        if (serialized.length > API_RESPONSE_MAX_CHARS) {
+            return { httpStatus: response.status, note: "响应体超过 1MB，已截断为文本返回", text: serialized.slice(0, API_RESPONSE_MAX_CHARS) };
+        }
+        return parsed;
+    },
+
+    // 16. 前端本地配置读写：get 返回原始配置与当前生效配置；set 逐 key 校验后调 updateConfig（Zustand persist 自动落盘，UI 实时刷新）
+    drama_local_config: (args) => {
+        const action = typeof args.action === "string" ? args.action : "";
+        if (action === "get") {
+            return { config: useConfigStore.getState().config, effective: getEffectiveConfig() };
+        }
+        if (action === "set") {
+            const patch = args.patch && typeof args.patch === "object" && !Array.isArray(args.patch) ? (args.patch as Record<string, unknown>) : null;
+            if (!patch || !Object.keys(patch).length) throw new Error("set 操作需要提供非空的 patch 对象");
+            const store = useConfigStore.getState();
+            for (const [key, value] of Object.entries(patch)) {
+                if (!(key in store.config)) throw new Error(`不支持的配置项: ${key}`);
+                store.updateConfig(key as keyof AiConfig, value as never);
+            }
+            return { ok: true, config: useConfigStore.getState().config };
+        }
+        throw new Error(`未知 action：${action}，可选 get / set`);
+    },
 };
+
+// 实时刷新接入：数据变更后重读全局公共设置（既有 load action）；漫剧项目列表为纯本地持久化，无既有刷新 action，不接入
+registerRefresh(() => void useConfigStore.getState().loadPublicSettings());
 
 // 模块加载即按持久化配置自启（设置弹窗挂在全局导航，任意页面都会加载本模块，保持连接不因路由切换断开）
 if (typeof window !== "undefined" && loadBridgeConfig().enabled) {
