@@ -28,6 +28,7 @@ func UpdateRenderTask(task model.RenderTask) (int64, error) {
 		"seconds":        task.Seconds,
 		"size":           task.Size,
 		"output_file_id": task.OutputFileID,
+		"local_path":     task.LocalPath,
 		"error":          task.Error,
 		"error_detail":   task.ErrorDetail,
 		"started_at":     task.StartedAt,

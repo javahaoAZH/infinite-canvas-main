@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strings"
 
 	"github.com/tigerowo/infinite-canvas/model"
@@ -135,6 +136,45 @@ func userLocalChannelHasModel(models []string, modelName string) bool {
 func userLocalDashScopeCompanionModel(protocol string, modelName string) bool {
 	return strings.EqualFold(strings.TrimSpace(protocol), ModelChannelProtocolDashScope) &&
 		strings.EqualFold(strings.TrimSpace(modelName), DashScopeImageEditModel)
+}
+
+// UserLocalChannelAPIKeyForURL 查找目标 URL 对应的本地渠道凭证：仅当目标 host 与某渠道 baseUrl 的 host
+// 精确匹配时返回该渠道 apiKey，否则报错，避免把渠道凭证发给无关主机。
+func UserLocalChannelAPIKeyForURL(ctx context.Context, targetURL string) (string, error) {
+	user, ok := UserFromContext(ctx)
+	if !ok || user.ID == "" {
+		return "", errors.New("请先登录")
+	}
+	config, found, err := repository.GetUserConfig(user.ID)
+	if err != nil {
+		return "", err
+	}
+	if !found || strings.TrimSpace(config.ModelConfig) == "" {
+		return "", errors.New("本地渠道不存在")
+	}
+	var modelConfig userModelConfigInput
+	if err := json.Unmarshal([]byte(config.ModelConfig), &modelConfig); err != nil {
+		return "", errors.New("本地渠道配置格式错误")
+	}
+	target, err := url.Parse(targetURL)
+	if err != nil || target.Host == "" {
+		return "", errors.New("无效的 url")
+	}
+	for _, channel := range modelConfig.LocalChannels {
+		baseURL := strings.TrimSpace(channel.BaseURL)
+		apiKey := strings.TrimSpace(channel.APIKey)
+		if baseURL == "" || apiKey == "" {
+			continue
+		}
+		parsed, err := url.Parse(baseURL)
+		if err != nil || parsed.Host == "" {
+			continue
+		}
+		if parsed.Host == target.Host {
+			return apiKey, nil
+		}
+	}
+	return "", errors.New("目标地址与本地渠道不匹配")
 }
 
 func CurrentUserConfig(ctx context.Context) (UserConfigPayload, error) {

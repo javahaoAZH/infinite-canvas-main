@@ -9,7 +9,8 @@ import { useRouter } from "next/navigation";
 import { CanvasNodeType, type CanvasNodeData, type InsertAssetPayload } from "@/app/(user)/canvas/types";
 import { useCanvasStore } from "@/app/(user)/canvas/stores/use-canvas-store";
 import { createDramaRender, generateVoiceAudio } from "@/app/(user)/drama/services/drama-generation";
-import { getRenderTask, RENDER_POLL_INTERVAL_MS, type RenderTaskResponse } from "@/services/api/render";
+import { getRenderTask, isAuthedRenderOutputUrl, RENDER_POLL_INTERVAL_MS, type RenderTaskResponse } from "@/services/api/render";
+import { useRenderOutputUrl } from "@/hooks/use-render-output-url";
 import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
 import { useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -139,6 +140,8 @@ export function VoiceStep({ project }: { project: DramaProject }) {
 
     const narrationCount = project.shots.filter((shot) => (shot.narration || "").trim()).length;
     const renderVideoUrl = renderTask?.url || renderTask?.video_url || "";
+    // 本地成片路径需鉴权：带 token 拉成 blob URL 播放/下载，外链直接透传
+    const renderOutputUrl = useRenderOutputUrl(token, renderVideoUrl);
 
     return (
         <div className="mx-auto w-full max-w-5xl space-y-6">
@@ -194,10 +197,16 @@ export function VoiceStep({ project }: { project: DramaProject }) {
                     <div className="mt-4 space-y-3">
                         {renderTask.status === "completed" && renderVideoUrl ? (
                             <>
-                                <video src={renderVideoUrl} controls className="max-h-80 w-full bg-black" />
-                                <a href={renderVideoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-stone-600 underline dark:text-stone-300">
-                                    <Video className="size-4" /> 打开 / 下载成片
-                                </a>
+                                <video src={renderOutputUrl} controls className="max-h-80 w-full bg-black" />
+                                {isAuthedRenderOutputUrl(renderVideoUrl) ? (
+                                    <a href={renderOutputUrl || undefined} download={`render-${renderTask.id}.mp4`} className="inline-flex items-center gap-1 text-sm text-stone-600 underline dark:text-stone-300">
+                                        <Video className="size-4" /> 打开 / 下载成片{renderOutputUrl ? "" : "（加载中…）"}
+                                    </a>
+                                ) : (
+                                    <a href={renderVideoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-stone-600 underline dark:text-stone-300">
+                                        <Video className="size-4" /> 打开 / 下载成片
+                                    </a>
+                                )}
                             </>
                         ) : renderTask.status === "failed" ? (
                             <p className="text-sm text-red-500">{renderTask.error?.message || "成片渲染失败，可重试"}</p>

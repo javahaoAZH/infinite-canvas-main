@@ -79,3 +79,33 @@ export function dataUrlToFile(image: ReferenceImage) {
     const detected = detectImageFileType(bytes);
     return new File([bytes], detected ? imageFilename(image.name, detected.extension) : image.name || "reference.png", { type: detected?.mimeType || mimeType });
 }
+
+const EDIT_IMAGE_MAX_SIDE = 1328;
+
+// edit 参考图尺寸钳制：仅当长边超过上限时用 canvas 缩放，宽高对齐 16；小图原样返回不重编码
+export async function clampReferenceImageDataUrl(dataUrl: string): Promise<string> {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const element = new Image();
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error("读取参考图失败"));
+        element.src = dataUrl;
+    });
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+    if (!width || !height || Math.max(width, height) <= EDIT_IMAGE_MAX_SIDE) return dataUrl;
+    const scale = EDIT_IMAGE_MAX_SIDE / Math.max(width, height);
+    const targetWidth = alignTo16(width * scale);
+    const targetHeight = alignTo16(height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return dataUrl;
+    context.drawImage(image, 0, 0, targetWidth, targetHeight);
+    const mime = dataUrl.match(/^data:(image\/(?:jpeg|webp));/)?.[1] || "image/png";
+    return canvas.toDataURL(mime, 0.95);
+}
+
+function alignTo16(value: number) {
+    return Math.max(16, Math.floor(value / 16) * 16);
+}

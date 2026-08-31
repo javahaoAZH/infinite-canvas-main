@@ -15,6 +15,7 @@ import {
     exportJianyingDraft,
     getRenderFFmpegStatus,
     getRenderTask,
+    isAuthedRenderOutputUrl,
     listRenderTasks,
     RENDER_POLL_INTERVAL_MS,
     stageLocalRenderMedia,
@@ -22,6 +23,7 @@ import {
     type RenderTaskResponse,
     type RenderTimelineSpec,
 } from "@/services/api/render";
+import { useRenderOutputUrl } from "@/hooks/use-render-output-url";
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { buildSrtFromDialogue, createSubtitleAbortSignal, splitDialogueWithAI } from "@/services/api/subtitle";
@@ -152,6 +154,8 @@ export function CanvasRenderModal({ open, onClose }: { open: boolean; onClose: (
     const dragIndexRef = useRef<number | null>(null);
 
     const [width, height] = useMemo(() => sizeValue.split("x").map(Number), [sizeValue]);
+    // 本地成片路径需鉴权：带 token 拉成 blob URL 播放/下载，外链直接透传
+    const renderOutputUrl = useRenderOutputUrl(token, task?.url || "");
 
     const collectItems = useCallback(() => {
         const nodes = project?.nodes ?? [];
@@ -438,6 +442,17 @@ export function CanvasRenderModal({ open, onClose }: { open: boolean; onClose: (
         }
     };
 
+    // 下载本地成片：blob URL + a[download]（直链无鉴权会 401）
+    const handleDownloadRenderOutput = () => {
+        if (!renderOutputUrl || !task) return;
+        const anchor = document.createElement("a");
+        anchor.href = renderOutputUrl;
+        anchor.download = `render-${task.id}.mp4`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+    };
+
     const panelStyle = { background: theme.node.panel, color: theme.node.text };
     const rowStyle = { background: theme.node.fill, borderColor: theme.node.stroke };
 
@@ -501,15 +516,21 @@ export function CanvasRenderModal({ open, onClose }: { open: boolean; onClose: (
                         />
                         {task.status === "completed" && task.url ? (
                             <div className="flex flex-col gap-3">
-                                <video src={task.url} controls className="w-full rounded-lg border bg-black" style={{ borderColor: theme.node.stroke, maxHeight: 300 }} />
+                                <video src={renderOutputUrl} controls className="w-full rounded-lg border bg-black" style={{ borderColor: theme.node.stroke, maxHeight: 300 }} />
                                 <div className="flex items-center gap-2 text-xs" style={{ color: theme.node.faint }}>
                                     {task.seconds ? <span>时长 {task.seconds} 秒</span> : null}
                                     {task.size ? <span>分辨率 {task.size}</span> : null}
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <Button icon={<Download className="size-4" />} href={task.url} target="_blank">
-                                        下载成片
-                                    </Button>
+                                    {isAuthedRenderOutputUrl(task.url) ? (
+                                        <Button icon={<Download className="size-4" />} disabled={!renderOutputUrl} onClick={handleDownloadRenderOutput}>
+                                            {renderOutputUrl ? "下载成片" : "成片加载中…"}
+                                        </Button>
+                                    ) : (
+                                        <Button icon={<Download className="size-4" />} href={task.url} target="_blank">
+                                            下载成片
+                                        </Button>
+                                    )}
                                     {submittedSrt && !submittedBurn ? (
                                         <Button icon={<Download className="size-4" />} onClick={downloadSrtFile}>
                                             下载 SRT

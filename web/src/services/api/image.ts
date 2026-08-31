@@ -2,7 +2,7 @@ import axios from "axios";
 
 import { isMiniMaxChannel, miniMaxModels } from "@/lib/minimax-video";
 import { assertDashScopeProxyAvailable, createDashScopeImageBody, DASHSCOPE_IMAGE_EDIT_MODEL, isDashScopeConfig, parseDashScopeImageUrls } from "@/lib/dashscope";
-import { dataUrlToFile } from "@/lib/image-utils";
+import { clampReferenceImageDataUrl, dataUrlToFile } from "@/lib/image-utils";
 import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
 import { isMimoChannel, mimoModels } from "@/lib/mimo-tts";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, normalizeGeminiBaseUrl } from "@/lib/gemini";
@@ -831,7 +831,7 @@ async function requestImageEditSingle(config: AiConfig, prompt: string, referenc
         formData.set("stream", "true");
         formData.set("partial_images", String(params.streamPartialImages));
     }
-    const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
+    const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await clampReferenceImageDataUrl(await imageToDataUrl(image)) })));
     files.forEach((file) => formData.append("image", file));
 
     const directProvider = !usesAccountProxy(config) ? directAIProviderForConfig(config) : null;
@@ -1205,7 +1205,7 @@ async function createCanvasImageTaskRequest(config: AiConfig & { seedIndex?: num
             formData.set("partial_images", String(params.streamPartialImages));
         }
         if (params.size) formData.set("size", params.size);
-        const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
+        const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await clampReferenceImageDataUrl(await imageToDataUrl(image)) })));
         files.forEach((file) => formData.append("image", file));
         return { method: "POST", headers: tokenHeaders, body: formData };
     }

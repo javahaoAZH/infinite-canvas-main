@@ -1,5 +1,5 @@
-// 算力服务器执行状态轮询器（模块级单例）：5s 轮询 /v1/comfy/queue，缓存队列摘要
-// （累计计数 + 运行中任务精简字段），供弹窗与画布同步复用；页面隐藏时暂停轮询。
+// 算力服务器执行状态轮询器（模块级单例）：自适应轮询 /v1/comfy/queue（有运行中任务 5s，否则 15s），
+// 缓存队列摘要（累计计数 + 运行中任务精简字段），供弹窗与画布同步复用；页面隐藏时暂停轮询。
 // 订阅方通过 subscribeComfyStatus 感知快照变化（drama-canvas-sync 借此触发防抖重建）。
 import { comfyWorkflowModelName, fetchComfyQueue, type ComfyJob, type ComfyQueueResponse } from "@/services/api/comfy-workflows";
 import { getEffectiveConfig } from "@/stores/use-config-store";
@@ -22,11 +22,12 @@ export type ComfyStatusSnapshot = {
     running: ComfyRunningJob[];
 };
 
-const POLL_INTERVAL_MS = 5000;
+const POLL_ACTIVE_INTERVAL_MS = 5000; // 最近一次快照有运行中任务（queued/running）
+const POLL_IDLE_INTERVAL_MS = 15000; // 无运行中任务时降频
 
 // source → model：弹窗与导演台两个来源各自登记，全部退出才真正停表
 const sources = new Map<string, string>();
-let timer: ReturnType<typeof setInterval> | null = null;
+let timer: ReturnType<typeof setTimeout> | null = null;
 let inflight = false;
 let visibilityBound = false;
 let current: ComfyStatusSnapshot | null = null;
@@ -97,15 +98,26 @@ async function pollOnce() {
 function ensureTimer() {
     if (timer) return;
     void pollOnce();
-    timer = setInterval(() => {
-        if (typeof document !== "undefined" && document.hidden) return;
+    scheduleNextPoll();
+}
+
+// 自适应间隔：按最近一次快照是否含运行中任务选 5s/15s，用 setTimeout 链逐次调度
+function scheduleNextPoll() {
+    if (timer) return;
+    timer = setTimeout(() => {
+        timer = null;
+        if (typeof document !== "undefined" && document.hidden) {
+            scheduleNextPoll();
+            return;
+        }
         void pollOnce();
-    }, POLL_INTERVAL_MS);
+        scheduleNextPoll();
+    }, current?.running.length ? POLL_ACTIVE_INTERVAL_MS : POLL_IDLE_INTERVAL_MS);
 }
 
 function stopTimer() {
     if (!timer) return;
-    clearInterval(timer);
+    clearTimeout(timer);
     timer = null;
 }
 

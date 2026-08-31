@@ -52,11 +52,20 @@ export async function downloadRemoteMedia(url: string) {
     return blob;
 }
 
-// 带鉴权下载远程媒体：本地渠道（如算力服务器）的产物文件需要 Bearer 令牌，经后端代理透传鉴权头下载
+// 带鉴权下载远程媒体：本地渠道（如算力服务器）的产物文件需要 Bearer 令牌。
+// 登录态改走服务端校验渠道匹配的专用端点，由后端附加渠道凭证；未登录保持原代理 + 渠道 bearer 逻辑。
 export async function downloadRemoteMediaWithAuth(url: string, bearerToken: string) {
+    const userToken = useUserStore.getState().token;
     const headers: Record<string, string> = {};
-    if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
-    const response = await fetch(getProxyUrl(url), { headers });
+    let requestUrl: string;
+    if (userToken) {
+        requestUrl = `/api/v1/media-proxy?url=${encodeURIComponent(url)}`;
+        headers.Authorization = `Bearer ${userToken}`;
+    } else {
+        requestUrl = getProxyUrl(url);
+        if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
+    }
+    const response = await fetch(requestUrl, { headers });
     if (!response.ok) throw new Error(`媒体下载失败：${response.status}`);
     const blob = await response.blob();
     if (blob.type.includes("json") || blob.type.startsWith("text/")) {

@@ -249,6 +249,11 @@ func executeRenderTask(taskID string) {
 	registerRenderRunning(taskID, cancel)
 	defer unregisterRenderRunning(taskID)
 	jobDir := filepath.Join(renderJobRootDir, task.ID)
+	// concat demuxer 以清单文件所在目录解析相对路径条目，
+	// 任务目录必须用绝对路径，否则片段条目会被拼成不存在的嵌套相对路径。
+	if absDir, err := filepath.Abs(jobDir); err == nil {
+		jobDir = absDir
+	}
 	defer os.RemoveAll(jobDir)
 
 	if status := FFmpegStatus(); !status.Available {

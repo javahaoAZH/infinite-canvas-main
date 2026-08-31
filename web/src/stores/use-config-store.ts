@@ -292,6 +292,7 @@ function isImageModelName(model: string) {
         value.includes("ideogram") ||
         value.includes("recraft") ||
         value.includes("sdxl") ||
+        value.includes("noobai") ||
         value.includes("stable-diffusion") ||
         value.includes("midjourney") ||
         value.includes("wan2-7-image") ||

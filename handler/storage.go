@@ -192,6 +192,30 @@ func ProxyImage(w http.ResponseWriter, r *http.Request) {
 		Fail(w, "无效的 url")
 		return
 	}
+	forwardProxiedMedia(w, targetURL, "")
+}
+
+// ProxyAuthorizedMedia 登录态下代理媒体下载：仅当目标 host 与用户本地渠道 baseUrl 的 host 精确匹配时，
+// 由服务端附加该渠道 Authorization: Bearer <apiKey> 转发，不匹配则拒绝。
+func ProxyAuthorizedMedia(w http.ResponseWriter, r *http.Request) {
+	targetURL := r.URL.Query().Get("url")
+	if targetURL == "" {
+		Fail(w, "url 参数不能为空")
+		return
+	}
+	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+		Fail(w, "无效的 url")
+		return
+	}
+	apiKey, err := service.UserLocalChannelAPIKeyForURL(r.Context(), targetURL)
+	if err != nil {
+		Fail(w, err.Error())
+		return
+	}
+	forwardProxiedMedia(w, targetURL, apiKey)
+}
+
+func forwardProxiedMedia(w http.ResponseWriter, targetURL string, apiKey string) {
 	client := service.SafeProxyHTTPClient()
 	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
 	if err != nil {
@@ -203,9 +227,8 @@ func ProxyImage(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Pragma", "no-cache")
-	// 透传客户端鉴权头：本地渠道（如算力服务器）的媒体产物下载需要 Bearer 令牌
-	if authorization := strings.TrimSpace(r.Header.Get("Authorization")); authorization != "" {
-		req.Header.Set("Authorization", authorization)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
 	resp, err := client.Do(req)

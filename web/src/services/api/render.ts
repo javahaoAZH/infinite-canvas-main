@@ -73,6 +73,20 @@ export async function stageLocalRenderMedia(token: string, blob: Blob, folder: s
     return payload.data.source;
 }
 
+// 本地保存模式的成片产物为需登录鉴权的相对路径；对象存储的 http 外链不需要鉴权
+export function isAuthedRenderOutputUrl(url: string) {
+    return url.startsWith("/api/");
+}
+
+// 带鉴权拉取本地成片产物：相对路径需携带 Bearer token，返回 blob 供转 object URL 播放/下载
+export async function fetchRenderOutputBlob(token: string, url: string) {
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error(`成片加载失败：${response.status}`);
+    const blob = await response.blob();
+    if (blob.type.includes("json")) throw new Error("成片加载失败");
+    return blob;
+}
+
 export function listRenderTasks(token: string) {
     return apiGet<RenderTaskResponse[]>("/api/v1/render/tasks", undefined, token);
 }
