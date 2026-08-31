@@ -203,6 +203,10 @@ func ProxyImage(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Pragma", "no-cache")
+	// 透传客户端鉴权头：本地渠道（如算力服务器）的媒体产物下载需要 Bearer 令牌
+	if authorization := strings.TrimSpace(r.Header.Get("Authorization")); authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

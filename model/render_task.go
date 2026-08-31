@@ -22,6 +22,7 @@ type TimelineSpec struct {
 	Items        []TimelineItem `json:"items"`
 	Srt          string         `json:"srt"`
 	BurnSubtitle bool           `json:"burnSubtitle"`
+	Folder       string         `json:"folder"`
 }
 
 // RenderTask 画布一键成片任务。
@@ -32,6 +33,7 @@ type RenderTask struct {
 	Progress     int    `json:"progress"`
 	TimelineJSON string `json:"timelineJson" gorm:"type:text"`
 	OutputFileID string `json:"outputFileId"`
+	LocalPath    string `json:"localPath" gorm:"type:text"`
 	Seconds      string `json:"seconds"`
 	Size         string `json:"size"`
 	Error        string `json:"error" gorm:"type:text"`

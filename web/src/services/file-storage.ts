@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import { deleteAnonymousStorageFile, uploadAnonymousStorageFile } from "@/services/anonymous-storage";
 import { apiGet } from "@/services/api/request";
 import { canUseGlobalStorage, getProxyUrl, loadUserStorageProvider, toProviderPayload, type StorageConfig, type UserWebDAVStorageProvider } from "@/services/image-storage";
+import { normalizeLocalChannels, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
@@ -49,6 +50,47 @@ export async function downloadRemoteMedia(url: string) {
         throw new Error(message || "媒体下载失败");
     }
     return blob;
+}
+
+// 带鉴权下载远程媒体：本地渠道（如算力服务器）的产物文件需要 Bearer 令牌，经后端代理透传鉴权头下载
+export async function downloadRemoteMediaWithAuth(url: string, bearerToken: string) {
+    const headers: Record<string, string> = {};
+    if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
+    const response = await fetch(getProxyUrl(url), { headers });
+    if (!response.ok) throw new Error(`媒体下载失败：${response.status}`);
+    const blob = await response.blob();
+    if (blob.type.includes("json") || blob.type.startsWith("text/")) {
+        const text = await blob.text().catch(() => "");
+        let message = "";
+        try {
+            const payload = JSON.parse(text) as { msg?: string; message?: string };
+            message = payload.msg || payload.message || "";
+        } catch {
+            message = text;
+        }
+        throw new Error(message || "媒体下载失败");
+    }
+    return blob;
+}
+
+// 解析本地渠道远程 URL 的 Bearer 凭证：仅当 host 与某个本地渠道 baseUrl 的 host 精确匹配时返回该渠道 apiKey，
+// 否则返回空串（调用方已有空串跳过逻辑）；不再兜底系统 apiKey，避免把无关凭证发给第三方主机（图片/视频缓存共用）
+export function mediaBearerForUrl(config: AiConfig, url: string): string {
+    const channels = normalizeLocalChannels(config);
+    try {
+        const host = new URL(url).host;
+        const byHost = channels.find((channel) => {
+            try {
+                return channel.baseUrl ? new URL(channel.baseUrl).host === host : false;
+            } catch {
+                return false;
+            }
+        });
+        return byHost?.apiKey || "";
+    } catch {
+        // url 非法时无法匹配渠道，返回空串
+        return "";
+    }
 }
 
 export async function uploadRemoteMediaToServer(url: string, filename: string): Promise<UploadedFile> {

@@ -1,12 +1,15 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, Drama, FolderPlus, PencilLine, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Drama, FolderPlus, Network, PencilLine, Trash2, Workflow } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { App, Button, Empty, Input, Modal, Select, Steps } from "antd";
 
-import { useConfigStore } from "@/stores/use-config-store";
+import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useDramaStore, useActiveDramaProject } from "@/stores/use-drama-store";
 import { getBridgeSnapshot, onBridgeStatusChange } from "./services/drama-bridge";
+import { initDramaCanvasAutoSync, syncDramaProjectToCanvas } from "./services/drama-canvas-sync";
+import { ComfyWorkflowsModal } from "./components/comfy-workflows-modal";
 import { CharactersStep } from "./components/characters-step";
 import { DirectorEntry } from "./components/director/director-entry";
 import { ScriptStep } from "./components/script-step";
@@ -45,6 +48,10 @@ function BridgeStatusEntry() {
 
 export default function DramaPage() {
     const { message, modal } = App.useApp();
+    const router = useRouter();
+    useEffect(() => {
+        initDramaCanvasAutoSync();
+    }, []);
     const projects = useDramaStore((state) => state.projects);
     const createProject = useDramaStore((state) => state.createProject);
     const openProject = useDramaStore((state) => state.openProject);
@@ -52,6 +59,8 @@ export default function DramaPage() {
     const deleteProject = useDramaStore((state) => state.deleteProject);
     const updateProject = useDramaStore((state) => state.updateProject);
     const project = useActiveDramaProject();
+    const effectiveConfig = useEffectiveConfig();
+    const [comfyOpen, setComfyOpen] = useState(false);
     const [renameOpen, setRenameOpen] = useState(false);
     const [renameValue, setRenameValue] = useState("");
 
@@ -82,6 +91,19 @@ export default function DramaPage() {
                         <div className="ml-auto flex flex-wrap items-center gap-2">
                             <BridgeStatusEntry />
                             <DirectorEntry project={project} />
+                            <Button
+                                icon={<Network className="size-4" />}
+                                onClick={() => {
+                                    const canvasProjectId = syncDramaProjectToCanvas(project.id);
+                                    if (!canvasProjectId) return message.info("画布数据正在加载，请稍后再试");
+                                    router.push(`/canvas/view?id=${canvasProjectId}`);
+                                }}
+                            >
+                                工作流画布
+                            </Button>
+                            <Button icon={<Workflow className="size-4" />} onClick={() => setComfyOpen(true)}>
+                                ComfyUI 工作流
+                            </Button>
                             <Select
                                 className="min-w-44"
                                 value={project.id}
@@ -158,6 +180,7 @@ export default function DramaPage() {
                 </div>
             </main>
 
+            <ComfyWorkflowsModal open={comfyOpen} onClose={() => setComfyOpen(false)} imageModel={effectiveConfig.imageModel || effectiveConfig.model} videoModel={effectiveConfig.videoModel || ""} />
             <Modal
                 title="重命名漫剧项目"
                 open={renameOpen}

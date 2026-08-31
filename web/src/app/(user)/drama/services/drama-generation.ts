@@ -5,9 +5,9 @@ import { parseStructuredScript, type StructuredCharacter } from "@/app/(user)/dr
 import { requestEdit, requestGeneration } from "@/services/api/image";
 import { requestVideoGeneration } from "@/services/api/video";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
-import { createRenderTask, type RenderTaskResponse, type RenderTimelineSpec } from "@/services/api/render";
-import { resolveMediaUrl } from "@/services/file-storage";
-import { uploadImage } from "@/services/image-storage";
+import { createRenderTask, stageLocalRenderMedia, type RenderTaskResponse, type RenderTimelineSpec } from "@/services/api/render";
+import { getMediaBlob, resolveMediaUrl } from "@/services/file-storage";
+import { getImageBlob, uploadImage } from "@/services/image-storage";
 import {
     collectCharacterReferences,
     dramaAudioConfig,
@@ -132,30 +132,47 @@ function mergeCharacters(existing: DramaCharacter[], incoming: StructuredCharact
 
 // 角色立绘候选：count 张并行生成（allSettled 收集，全失败才报错），结果写入 character.candidates
 export async function generateCharacterCandidates(projectId: string, characterId: string, effectiveConfig: AiConfig, count = 4): Promise<DramaMedia[]> {
-    const character = findProject(projectId)?.characters.find((item) => item.id === characterId);
-    // 主体不存在时静默返回（手工步骤中角色可能已被删除），不报错不中断批量；director 侧另行标记跳过
-    if (!character) return [];
-    const description = character.description.trim();
-    if (!description) throw new Error(`请先填写「${character.name || "角色"}」的角色描述`);
-    const config = dramaImageConfig(effectiveConfig);
-    assertImageChannel(config);
-    const state = useDramaStore.getState();
-    const prompt = buildCharacterImagePrompt(description, resolveArtStyleBase(state.artStyle, state.customArtStyle), resolveScenePreset(state.scene));
-    const results = await Promise.allSettled(Array.from({ length: count }, () => requestGeneration(config, prompt)));
-    const generated = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-    if (!generated.length) {
-        const reason = results.find((result): result is PromiseRejectedResult => result.status === "rejected")?.reason;
-        throw new Error(reason instanceof Error ? reason.message : "立绘生成失败，请检查图片渠道配置后重试");
+    // 忙碌登记：供画布实时同步渲染「生成中」占位节点，手动步骤与导演台两条路径共用
+    const busyKey = `${projectId}:character:${characterId}`;
+    const startedAt = Date.now();
+    useDramaStore.getState().setBusyMedia(busyKey, { kind: "character", startedAt });
+    try {
+        const character = findProject(projectId)?.characters.find((item) => item.id === characterId);
+        // 主体不存在时静默返回（手工步骤中角色可能已被删除），不报错不中断批量；director 侧另行标记跳过
+        if (!character) return [];
+        const description = character.description.trim();
+        if (!description) throw new Error(`请先填写「${character.name || "角色"}」的角色描述`);
+        const config = dramaImageConfig(effectiveConfig);
+        assertImageChannel(config);
+        const state = useDramaStore.getState();
+        const prompt = buildCharacterImagePrompt(description, resolveArtStyleBase(state.artStyle, state.customArtStyle), resolveScenePreset(state.scene));
+        const results = await Promise.allSettled(Array.from({ length: count }, () => requestGeneration(config, prompt)));
+        const generated = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+        if (!generated.length) {
+            const reason = results.find((result): result is PromiseRejectedResult => result.status === "rejected")?.reason;
+            throw new Error(reason instanceof Error ? reason.message : "立绘生成失败，请检查图片渠道配置后重试");
+        }
+        const candidates = await Promise.all(
+            generated.map(async (image) => {
+                const uploaded = await uploadImage(image.dataUrl);
+                return { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
+            }),
+        );
+        const current = findProject(projectId);
+        useDramaStore.getState().updateProject(projectId, { characters: (current?.characters || []).map((item) => (item.id === characterId ? { ...item, candidates } : item)) });
+        // 成功写回后逐张候选归档到 D 盘项目文件夹（fire-and-forget，失败静默）
+        candidates.forEach((candidate, index) => {
+            archiveShotMediaToDisk(projectId, candidate.storageKey, `角色立绘-${character.name}-${index + 1}.${mediaExtension(candidate.mimeType || "image/png", "png")}`);
+        });
+        useDramaStore.getState().clearFailedMedia(busyKey);
+        return candidates;
+    } catch (error) {
+        // 失败登记供画布同步优先展示失败原因；重新抛出保持原有报错行为（B9）
+        useDramaStore.getState().setFailedMedia(busyKey, error instanceof Error ? error.message : "立绘生成失败");
+        throw error;
+    } finally {
+        useDramaStore.getState().clearBusyMedia(busyKey, startedAt);
     }
-    const candidates = await Promise.all(
-        generated.map(async (image) => {
-            const uploaded = await uploadImage(image.dataUrl);
-            return { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
-        }),
-    );
-    const current = findProject(projectId);
-    useDramaStore.getState().updateProject(projectId, { characters: (current?.characters || []).map((item) => (item.id === characterId ? { ...item, candidates } : item)) });
-    return candidates;
 }
 
 // 自动分配视图：把首选立绘（candidates[0]）分配到 front 视图，解锁分镜图角色参考
@@ -171,73 +188,161 @@ export function autoAssignViews(projectId: string, characterId: string) {
 
 // 分镜图：有角色视图参考走图生图，否则文生图；角色锚点与画风/场景均实时读取最新状态
 export async function generateShotImage(projectId: string, shotId: string, effectiveConfig: AiConfig): Promise<void> {
-    const project = findProject(projectId);
-    const shot = project?.shots.find((item) => item.id === shotId);
-    // 主体不存在时静默返回（手工步骤中分镜可能已被删除），保持平移前的旧行为；director 侧另行标记跳过
-    if (!shot) return;
-    if (!shot.description.trim()) throw new Error("请先在分镜步骤填写画面描述");
-    const config = dramaImageConfig(effectiveConfig);
-    assertImageChannel(config);
-    const state = useDramaStore.getState();
-    const references = collectCharacterReferences(state.projects.find((item) => item.id === projectId)?.characters || []);
-    // 本镜出场角色锚点：描述中命中角色名的优先，无命中取前 2 个有描述的角色，各取描述前 60 字
-    const characters = (state.projects.find((item) => item.id === projectId)?.characters || []).filter((character) => character.description.trim());
-    const matched = characters.filter((character) => character.name.trim() && shot.description.includes(character.name.trim())).slice(0, 3);
-    const anchors = (matched.length ? matched : characters.slice(0, 2)).map((character) => `${character.name}：${character.description.slice(0, 60)}`);
-    const prompt = buildShotImagePrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), classifyShotFrame(shot), resolveScenePreset(useDramaStore.getState().scene), anchors);
-    const images = references.length ? await requestEdit(config, prompt, references) : await requestGeneration(config, prompt);
-    const image = images[0];
-    if (!image) throw new Error("图片接口没有返回结果");
-    const uploaded = await uploadImage(image.dataUrl);
-    const current = findProject(projectId);
-    useDramaStore.getState().updateProject(projectId, {
-        shotImages: { ...(current?.shotImages || {}), [shotId]: { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType } },
-    });
+    // 忙碌登记：供画布实时同步渲染「生成中」占位节点，手动步骤与导演台两条路径共用
+    const busyKey = `${projectId}:shotImage:${shotId}`;
+    const startedAt = Date.now();
+    useDramaStore.getState().setBusyMedia(busyKey, { kind: "shotImage", startedAt });
+    try {
+        const project = findProject(projectId);
+        const shot = project?.shots.find((item) => item.id === shotId);
+        // 主体不存在时静默返回（手工步骤中分镜可能已被删除），保持平移前的旧行为；director 侧另行标记跳过
+        if (!shot) return;
+        if (!shot.description.trim()) throw new Error("请先在分镜步骤填写画面描述");
+        const config = dramaImageConfig(effectiveConfig);
+        assertImageChannel(config);
+        const state = useDramaStore.getState();
+        const projectCharacters = state.projects.find((item) => item.id === projectId)?.characters || [];
+        const references = collectCharacterReferences(projectCharacters);
+        // 有角色但没有任何角色分配立绘视图时参考图为空，生成的人物可能不一致，提前报错引导去角色步骤分配；无角色项目不受影响（A3）
+        if (projectCharacters.length && !references.length) throw new Error("请先在角色步骤为角色分配立绘视图，否则生成的人物可能不一致");
+        // 本镜出场角色锚点：描述中命中角色名的优先，无命中取前 2 个有描述的角色，各取描述前 60 字
+        const characters = projectCharacters.filter((character) => character.description.trim());
+        const matched = characters.filter((character) => character.name.trim() && shot.description.includes(character.name.trim())).slice(0, 3);
+        const anchors = (matched.length ? matched : characters.slice(0, 2)).map((character) => `${character.name}：${character.description.slice(0, 60)}`);
+        const prompt = buildShotImagePrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), classifyShotFrame(shot), resolveScenePreset(useDramaStore.getState().scene), anchors);
+        const images = references.length ? await requestEdit(config, prompt, references) : await requestGeneration(config, prompt);
+        const image = images[0];
+        if (!image) throw new Error("图片接口没有返回结果");
+        const uploaded = await uploadImage(image.dataUrl);
+        const current = findProject(projectId);
+        useDramaStore.getState().updateProject(projectId, {
+            shotImages: { ...(current?.shotImages || {}), [shotId]: { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType } },
+        });
+        // 成功写入 store 后异步归档到 D 盘项目文件夹（不阻塞主流程、失败静默）
+        archiveShotMediaToDisk(projectId, uploaded.storageKey, `分镜图-${shotNumber(projectId, shotId)}.${mediaExtension(uploaded.mimeType || "image/png", "png")}`);
+        useDramaStore.getState().clearFailedMedia(busyKey);
+    } catch (error) {
+        // 失败登记供画布同步优先展示失败原因；重新抛出保持原有报错行为（B9）
+        useDramaStore.getState().setFailedMedia(busyKey, error instanceof Error ? error.message : "分镜图生成失败");
+        throw error;
+    } finally {
+        useDramaStore.getState().clearBusyMedia(busyKey, startedAt);
+    }
 }
 
 // 图生视频：依赖该分镜的分镜图，场景/画风实时读取；进度经 onProgress 回调
 export async function generateShotVideo(projectId: string, shotId: string, effectiveConfig: AiConfig, onProgress?: (progress: number) => void): Promise<void> {
-    const current = findProject(projectId);
-    const shot = current?.shots.find((item) => item.id === shotId);
-    // 分镜不存在时静默返回（可能被删除）；缺分镜图仍是真实错误，保持报错可重试
-    if (!shot) return;
-    const shotImage = current?.shotImages[shotId];
-    if (!shotImage) throw new Error("请先生成该分镜的分镜图");
-    const config = dramaVideoConfig(effectiveConfig);
-    if (!useConfigStore.getState().isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的视频模型渠道");
-    const state = useDramaStore.getState();
-    const prompt = buildShotVideoPrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), shot.seconds, resolveScenePreset(useDramaStore.getState().scene));
-    const result = await requestVideoGeneration(config, prompt, [toReferenceImage(shotImage, "分镜图")], (progress) => onProgress?.(progress));
-    const latest = findProject(projectId);
-    useDramaStore.getState().updateProject(projectId, {
-        shotVideos: {
-            ...(latest?.shotVideos || {}),
-            [shotId]: { url: result.url, storageKey: result.task.storageKey, width: result.width, height: result.height, durationMs: result.durationMs, mimeType: result.mimeType || "video/mp4" },
-        },
-    });
+    // 忙碌登记：供画布实时同步渲染「生成中」占位节点，手动步骤与导演台两条路径共用；进度仍走 onProgress 回调
+    const busyKey = `${projectId}:shotVideo:${shotId}`;
+    const startedAt = Date.now();
+    useDramaStore.getState().setBusyMedia(busyKey, { kind: "shotVideo", startedAt });
+    try {
+        const current = findProject(projectId);
+        const shot = current?.shots.find((item) => item.id === shotId);
+        // 分镜不存在时静默返回（可能被删除）；缺分镜图仍是真实错误，保持报错可重试
+        if (!shot) return;
+        const shotImage = current?.shotImages[shotId];
+        if (!shotImage) throw new Error("请先生成该分镜的分镜图");
+        const config = dramaVideoConfig(effectiveConfig);
+        if (!useConfigStore.getState().isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的视频模型渠道");
+        const state = useDramaStore.getState();
+        const prompt = buildShotVideoPrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), shot.seconds, resolveScenePreset(useDramaStore.getState().scene));
+        // 参考数组：分镜图保持第一位作首帧，追加项目角色立绘参考保障人物一致性（A2）；本地算力流水线只会消费第一张（见 video.ts）
+        const references = [toReferenceImage(shotImage, "分镜图"), ...collectCharacterReferences(findProject(projectId)?.characters || [])];
+        const result = await requestVideoGeneration(config, prompt, references, (progress) => onProgress?.(progress));
+        const latest = findProject(projectId);
+        useDramaStore.getState().updateProject(projectId, {
+            shotVideos: {
+                ...(latest?.shotVideos || {}),
+                [shotId]: { url: result.url, storageKey: result.task.storageKey, width: result.width, height: result.height, durationMs: result.durationMs, mimeType: result.mimeType || "video/mp4" },
+            },
+        });
+        // 成功写入 store 后异步归档到 D 盘项目文件夹（不阻塞主流程、失败静默）
+        archiveShotMediaToDisk(projectId, result.task.storageKey, `分镜视频-${shotNumber(projectId, shotId)}.${mediaExtension(result.mimeType || "video/mp4", "mp4")}`);
+        useDramaStore.getState().clearFailedMedia(busyKey);
+    } catch (error) {
+        // 失败登记供画布同步优先展示失败原因；重新抛出保持原有报错行为（B9）
+        useDramaStore.getState().setFailedMedia(busyKey, error instanceof Error ? error.message : "分镜视频生成失败");
+        throw error;
+    } finally {
+        useDramaStore.getState().clearBusyMedia(busyKey, startedAt);
+    }
 }
 
 // 配音：对白键 = shot.id，旁白键 = `${shot.id}:narration`，文本实时读取最新分镜
 export async function generateVoiceAudio(projectId: string, audioKey: string, effectiveConfig: AiConfig): Promise<void> {
-    const isNarration = audioKey.endsWith(":narration");
-    const shotId = isNarration ? audioKey.slice(0, -":narration".length) : audioKey;
-    const shot = findProject(projectId)?.shots.find((item) => item.id === shotId);
-    // 主体不存在时静默返回（手工步骤中分镜可能已被删除）；director 侧另行标记跳过
-    if (!shot) return;
-    const text = (isNarration ? shot.narration || "" : shot.dialogue).trim();
-    if (!text) throw new Error("该分镜没有可配音的对白或旁白");
-    const config = dramaAudioConfig(effectiveConfig);
-    if (!useConfigStore.getState().isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的音频模型渠道");
-    const blob = await requestAudioGeneration(config, text);
-    const stored = await storeGeneratedAudio(blob);
-    const current = findProject(projectId);
-    useDramaStore.getState().updateProject(projectId, {
-        shotAudios: { ...(current?.shotAudios || {}), [audioKey]: { url: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, mimeType: stored.mimeType, durationMs: stored.durationMs } },
-    });
+    // 忙碌登记：供画布实时同步渲染「生成中」占位节点，手动步骤与导演台两条路径共用；键含 :narration 后缀
+    const busyKey = `${projectId}:audio:${audioKey}`;
+    const startedAt = Date.now();
+    useDramaStore.getState().setBusyMedia(busyKey, { kind: "audio", startedAt });
+    try {
+        const isNarration = audioKey.endsWith(":narration");
+        const shotId = isNarration ? audioKey.slice(0, -":narration".length) : audioKey;
+        const shot = findProject(projectId)?.shots.find((item) => item.id === shotId);
+        // 主体不存在时静默返回（手工步骤中分镜可能已被删除）；director 侧另行标记跳过
+        if (!shot) return;
+        const text = (isNarration ? shot.narration || "" : shot.dialogue).trim();
+        if (!text) throw new Error("该分镜没有可配音的对白或旁白");
+        const config = dramaAudioConfig(effectiveConfig);
+        if (!useConfigStore.getState().isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的音频模型渠道");
+        const blob = await requestAudioGeneration(config, text);
+        const stored = await storeGeneratedAudio(blob);
+        const current = findProject(projectId);
+        useDramaStore.getState().updateProject(projectId, {
+            shotAudios: { ...(current?.shotAudios || {}), [audioKey]: { url: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, mimeType: stored.mimeType, durationMs: stored.durationMs } },
+        });
+        // 成功写入 store 后异步归档到 D 盘项目文件夹（不阻塞主流程、失败静默）
+        archiveShotMediaToDisk(projectId, stored.storageKey, `${isNarration ? "分镜旁白" : "分镜配音"}-${shotNumber(projectId, shotId)}.${mediaExtension(stored.mimeType || "audio/mpeg", "mp3")}`);
+        useDramaStore.getState().clearFailedMedia(busyKey);
+    } catch (error) {
+        // 失败登记供画布同步优先展示失败原因；重新抛出保持原有报错行为（B9）
+        useDramaStore.getState().setFailedMedia(busyKey, error instanceof Error ? error.message : "配音生成失败");
+        throw error;
+    } finally {
+        useDramaStore.getState().clearBusyMedia(busyKey, startedAt);
+    }
+}
+
+// 按 storageKey 前缀读本地 blob：图片走 image-storage，其余（视频/音频）走 file-storage；取不到返回 null
+async function readLocalBlob(storageKey: string) {
+    try {
+        return storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
+    } catch {
+        return null;
+    }
+}
+
+// 归档文件名的扩展名：按 mimeType 映射，其余回退传入值
+function mediaExtension(mimeType: string, fallback: string) {
+    if (mimeType === "image/jpeg") return "jpg";
+    if (mimeType === "image/webp") return "webp";
+    if (mimeType === "audio/wav") return "wav";
+    return fallback;
+}
+
+// 归档文件名的镜头序号 = 分镜在全部分镜列表中的位置（1 起）
+function shotNumber(projectId: string, shotId: string) {
+    return (findProject(projectId)?.shots.findIndex((shot) => shot.id === shotId) ?? -1) + 1;
+}
+
+// 单产物归档到 D 盘项目文件夹（fire-and-forget）：已登录且本地能取到 blob 才上传，失败静默不影响主流程
+function archiveShotMediaToDisk(projectId: string, storageKey: string | undefined, filename: string) {
+    const token = useUserStore.getState().token;
+    const project = findProject(projectId);
+    if (!token || !project || !storageKey) return;
+    void (async () => {
+        try {
+            const blob = await readLocalBlob(storageKey);
+            if (!blob) return;
+            await stageLocalRenderMedia(token, blob, project.title, filename);
+        } catch {
+            // 归档失败静默，不影响生成主流程
+        }
+    })();
 }
 
 // 一键成片服务（voice-step 薄壳与 Qoder 通道共用）：登录校验 → 按 shotsWithVideo 过滤 →
-// blob: 媒体拒绝 → 组装 RenderTimelineSpec → createRenderTask（行为与原 voice-step 内联实现一致）
+// blob: 本地媒体经暂存上传换成 file: 源 → 组装 RenderTimelineSpec → createRenderTask
 export async function createDramaRender(projectId: string): Promise<RenderTaskResponse> {
     const token = useUserStore.getState().token;
     if (!token) throw new Error("成片需要登录账号");
@@ -248,19 +353,38 @@ export async function createDramaRender(projectId: string): Promise<RenderTaskRe
     const items: RenderTimelineSpec["items"] = [];
     let width = 1280;
     let height = 720;
+    const staging: Array<() => Promise<void>> = [];
+    // blob: 本地媒体：按 storageKey 取 blob 暂存到 D 盘项目文件夹，用返回的 file: 源替换；取不到 blob 才报错
+    const stageLocalBlob = (storageKey: string | undefined, filename: string, apply: (source: string) => void) => {
+        staging.push(async () => {
+            const blob = storageKey ? await readLocalBlob(storageKey) : null;
+            if (!blob) throw new Error("本地媒体缓存已失效，请重新生成");
+            apply(await stageLocalRenderMedia(token, blob, project.title, filename));
+        });
+    };
     for (const shot of shotsWithVideo) {
         const video = project.shotVideos[shot.id];
         const videoUrl = await resolveMediaUrl(video.storageKey, video.url);
-        if (videoUrl.startsWith("blob:")) throw new Error("分镜视频保存在本地浏览器中，请登录并重新生成视频后再一键成片");
+        // 服务端对象存储媒体直接传 storageKey，成片引擎经 DownloadStorageObject 读取，避免外链鉴权/跨域问题
+        const videoSource = typeof video.storageKey === "string" && video.storageKey.startsWith("server:") ? video.storageKey : videoUrl;
+        const shotNo = project.shots.findIndex((item) => item.id === shot.id) + 1;
+        const videoItem = { kind: "video" as const, source: videoSource };
+        items.push(videoItem);
+        if (videoItem.source.startsWith("blob:")) stageLocalBlob(video.storageKey, `分镜视频-${shotNo}.${mediaExtension(video.mimeType || "video/mp4", "mp4")}`, (source) => { videoItem.source = source; });
         if (video.width && video.height) ({ width, height } = { width: video.width, height: video.height });
-        items.push({ kind: "video", source: videoUrl });
         for (const key of [shot.id, `${shot.id}:narration`]) {
             const audio = project.shotAudios[key];
             if (!audio) continue;
             const audioUrl = await resolveMediaUrl(audio.storageKey, audio.url);
-            if (audioUrl.startsWith("blob:")) throw new Error("分镜配音保存在本地浏览器中，请登录并重新生成配音后再一键成片");
-            items.push({ kind: "audio", source: audioUrl, durationMs: audio.durationMs || Math.max(1000, Math.round((shot.seconds || 5) * 1000)) });
+            const audioSource = typeof audio.storageKey === "string" && audio.storageKey.startsWith("server:") ? audio.storageKey : audioUrl;
+            const audioItem = { kind: "audio" as const, source: audioSource, durationMs: audio.durationMs || Math.max(1000, Math.round((shot.seconds || 5) * 1000)) };
+            items.push(audioItem);
+            if (audioItem.source.startsWith("blob:")) stageLocalBlob(audio.storageKey, `${key.endsWith(":narration") ? "分镜旁白" : "分镜配音"}-${shotNo}.${mediaExtension(audio.mimeType || "audio/mpeg", "mp3")}`, (source) => { audioItem.source = source; });
         }
     }
-    return createRenderTask(token, { fps: 30, width, height, items });
+    // 本地媒体暂存上传并发限 2，全部换成 file: 源后再提交成片任务
+    for (let index = 0; index < staging.length; index += 2) {
+        await Promise.all(staging.slice(index, index + 2).map((job) => job()));
+    }
+    return createRenderTask(token, { fps: 30, width, height, folder: project.title, items });
 }

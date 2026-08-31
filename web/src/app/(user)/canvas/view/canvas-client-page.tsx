@@ -21,6 +21,8 @@ import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useDirectorStore } from "@/stores/use-director-store";
+import { useDramaStore } from "@/stores/use-drama-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "../utils/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "../utils/canvas-node-size";
 import { captureVideoFrame, type VideoFramePosition } from "../utils/canvas-video-frame";
@@ -5228,7 +5230,18 @@ function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefine
 }
 
 function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
-    return nodes.map((node) => (node.metadata?.status === "loading" && !canvasRecoverableTaskId(node) ? { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: "页面刷新后生成已中断，请重新生成。" } } : node));
+    return nodes.map((node) => (node.metadata?.status === "loading" && !dramaSyncSourceAlive(node) && !canvasRecoverableTaskId(node) ? { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: "页面刷新后生成已中断，请重新生成。" } } : node));
+}
+
+// drama-sync: 节点豁免收紧（B6）：仅当对应忙碌源仍存在时才豁免复位——
+// 漫剧 busyMedia 中仍有该项目的忙碌登记，或导演台该项目还有 running/pending 任务；否则照常复位为「生成已中断」错误态。
+// 节点 id 形如 drama-sync:<projectId>:...，从中提取 projectId
+function dramaSyncSourceAlive(node: CanvasNodeData) {
+    if (!node.id.startsWith("drama-sync:")) return false;
+    const projectId = node.id.split(":")[1] || "";
+    if (!projectId) return false;
+    if (Object.keys(useDramaStore.getState().busyMedia).some((key) => key.startsWith(`${projectId}:`))) return true;
+    return (useDirectorStore.getState().plans[projectId]?.tasks || []).some((task) => task.status === "running" || task.status === "pending");
 }
 
 function canvasRecoverableTaskId(node: CanvasNodeData) {

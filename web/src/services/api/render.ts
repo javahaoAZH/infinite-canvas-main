@@ -24,6 +24,7 @@ export type RenderTimelineSpec = {
     items: RenderTimelineItem[];
     srt?: string;
     burnSubtitle?: boolean;
+    folder?: string;
 };
 
 export type RenderTaskResponse = {
@@ -35,6 +36,7 @@ export type RenderTaskResponse = {
     fileId?: string;
     url?: string;
     video_url?: string;
+    localPath?: string;
     error?: { message?: string };
     createdAt?: string;
     updatedAt?: string;
@@ -54,6 +56,21 @@ export function saveRenderFFmpegPath(token: string, path: string) {
 
 export function createRenderTask(token: string, timeline: RenderTimelineSpec) {
     return apiPost<RenderTaskResponse>("/api/v1/render/tasks", { timeline }, token);
+}
+
+// 把浏览器本地媒体（blob）暂存到后端本地磁盘的项目文件夹，返回 file: 来源，供一键成片引擎读取
+export async function stageLocalRenderMedia(token: string, blob: Blob, folder: string, filename: string): Promise<string> {
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    formData.append("folder", folder);
+    const response = await fetch("/api/v1/render/local-media", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+    });
+    const payload = (await response.json().catch(() => null)) as { code?: number; msg?: string; data?: { source?: string } } | null;
+    if (!response.ok || payload?.code !== 0 || !payload.data?.source) throw new Error(payload?.msg || "本地媒体暂存失败");
+    return payload.data.source;
 }
 
 export function listRenderTasks(token: string) {

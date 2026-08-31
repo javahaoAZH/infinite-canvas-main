@@ -56,6 +56,11 @@ func New() *gin.Engine {
 	v1.POST("/chat/completions", gin.WrapF(handler.AIChatCompletions))
 	v1.POST("/audio/speech", gin.WrapF(handler.AIAudioSpeech))
 	v1.GET("/tts/voices", gin.WrapF(handler.AITTSVoices))
+	v1.GET("/comfy/workflows", gin.WrapF(handler.AIComfyWorkflows))
+	v1.GET("/comfy/queue", gin.WrapF(handler.AIComfyQueue))
+	v1.GET("/comfy/jobs/:id", func(c *gin.Context) {
+		handler.AIComfyJob(c.Writer, c.Request, c.Param("id"))
+	})
 	v1.POST("/canvas/tasks/delete", gin.WrapF(handler.DeleteUserCanvasTasks))
 	v1.POST("/canvas/image-tasks", gin.WrapF(handler.CreateCanvasImageTask))
 	v1.GET("/canvas/image-tasks", gin.WrapF(handler.UserCanvasImageTasks))
@@ -88,6 +93,10 @@ func New() *gin.Engine {
 	v1.DELETE("/render/tasks/:id", func(c *gin.Context) {
 		handler.DeleteUserRenderTask(c.Writer, c.Request, c.Param("id"))
 	})
+	v1.GET("/render/tasks/:id/output", func(c *gin.Context) {
+		handler.ServeRenderOutput(c.Writer, c.Request, c.Param("id"))
+	})
+	v1.POST("/render/local-media", gin.WrapF(handler.StageRenderMedia))
 	v1.GET("/videos/:id", func(c *gin.Context) {
 		handler.AIVideo(c.Writer, c.Request, c.Param("id"))
 	})

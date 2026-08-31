@@ -1,0 +1,291 @@
+﻿diff --git a/handler/render_task.go b/handler/render_task.go
+index 0797e27..edb314d 100644
+--- a/handler/render_task.go
++++ b/handler/render_task.go
+@@ -2,6 +2,7 @@ package handler
+ 
+ import (
+ 	"encoding/json"
++	"io"
+ 	"net/http"
+ 	"strings"
+ 
+@@ -83,3 +84,48 @@ func DeleteUserRenderTask(w http.ResponseWriter, r *http.Request, id string) {
+ 	}
+ 	OK(w, map[string]any{"deleted": true})
+ }
++
++// StageRenderMedia 鍓嶇鎶婃湰鍦板獟浣擄紙娴忚鍣?blob锛夋殏瀛樺埌鏈湴纾佺洏椤圭洰鏂囦欢澶癸紝杩斿洖 file: 鏉ユ簮渚涗竴閿垚鐗囪鍙栥€?+func StageRenderMedia(w http.ResponseWriter, r *http.Request) {
++	if _, ok := service.UserFromContext(r.Context()); !ok {
++		Fail(w, "鏈櫥褰曟垨鏉冮檺涓嶈冻")
++		return
++	}
++	if err := r.ParseMultipartForm(64 << 20); err != nil {
++		Fail(w, "绱犳潗杩囧ぇ鎴栦笂浼犳牸寮忎笉姝ｇ‘")
++		return
++	}
++	file, header, err := r.FormFile("file")
++	if err != nil {
++		Fail(w, "璇蜂笂浼犵礌鏉愭枃浠?)
++		return
++	}
++	defer file.Close()
++	data, err := io.ReadAll(file)
++	if err != nil {
++		FailError(w, err)
++		return
++	}
++	folder := strings.TrimSpace(r.FormValue("folder"))
++	source, err := service.StageLocalRenderMedia(folder, header.Filename, header.Header.Get("Content-Type"), data)
++	if err != nil {
++		FailError(w, err)
++		return
++	}
++	OK(w, map[string]string{"source": source})
++}
++
++// ServeRenderOutput 娴佸紡杩斿洖淇濆瓨鍦ㄦ湰鍦扮鐩樼殑鎴愮墖鏂囦欢銆?+func ServeRenderOutput(w http.ResponseWriter, r *http.Request, id string) {
++	if _, ok := service.UserFromContext(r.Context()); !ok {
++		Fail(w, "鏈櫥褰曟垨鏉冮檺涓嶈冻")
++		return
++	}
++	localPath, err := service.RenderOutputLocalPath(id)
++	if err != nil {
++		Fail(w, err.Error())
++		return
++	}
++	w.Header().Set("Content-Type", "video/mp4")
++	http.ServeFile(w, r, localPath)
++}
+diff --git a/handler/storage.go b/handler/storage.go
+index 62a85c1..6139448 100644
+--- a/handler/storage.go
++++ b/handler/storage.go
+@@ -203,6 +203,10 @@ func ProxyImage(w http.ResponseWriter, r *http.Request) {
+ 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+ 	req.Header.Set("Cache-Control", "no-cache")
+ 	req.Header.Set("Pragma", "no-cache")
++	// 閫忎紶瀹㈡埛绔壌鏉冨ご锛氭湰鍦版笭閬擄紙濡傜畻鍔涙湇鍔″櫒锛夌殑濯掍綋浜х墿涓嬭浇闇€瑕?Bearer 浠ょ墝
++	if authorization := strings.TrimSpace(r.Header.Get("Authorization")); authorization != "" {
++		req.Header.Set("Authorization", authorization)
++	}
+ 
+ 	resp, err := client.Do(req)
+ 	if err != nil {
+diff --git a/model/render_task.go b/model/render_task.go
+index 3802089..6407bf3 100644
+--- a/model/render_task.go
++++ b/model/render_task.go
+@@ -22,6 +22,7 @@ type TimelineSpec struct {
+ 	Items        []TimelineItem `json:"items"`
+ 	Srt          string         `json:"srt"`
+ 	BurnSubtitle bool           `json:"burnSubtitle"`
++	Folder       string         `json:"folder"`
+ }
+ 
+ // RenderTask 鐢诲竷涓€閿垚鐗囦换鍔°€?@@ -32,6 +33,7 @@ type RenderTask struct {
+ 	Progress     int    `json:"progress"`
+ 	TimelineJSON string `json:"timelineJson" gorm:"type:text"`
+ 	OutputFileID string `json:"outputFileId"`
++	LocalPath    string `json:"localPath" gorm:"type:text"`
+ 	Seconds      string `json:"seconds"`
+ 	Size         string `json:"size"`
+ 	Error        string `json:"error" gorm:"type:text"`
+diff --git a/service/render_task.go b/service/render_task.go
+index 7962a13..1e54dc2 100644
+--- a/service/render_task.go
++++ b/service/render_task.go
+@@ -22,6 +22,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/google/uuid"
++	"github.com/tigerowo/infinite-canvas/config"
+ 	"github.com/tigerowo/infinite-canvas/model"
+ 	"github.com/tigerowo/infinite-canvas/repository"
+ )
+@@ -176,6 +177,12 @@ func RenderTaskResponse(task model.RenderTask) map[string]any {
+ 		result["url"] = contentURL
+ 		result["video_url"] = contentURL
+ 		result["data"] = []map[string]any{{"url": contentURL}}
++	} else if strings.TrimSpace(task.LocalPath) != "" {
++		outputURL := "/api/v1/render/tasks/" + task.ID + "/output"
++		result["url"] = outputURL
++		result["video_url"] = outputURL
++		result["data"] = []map[string]any{{"url": outputURL}}
++		result["localPath"] = task.LocalPath
+ 	}
+ 	if task.Status == "failed" {
+ 		// ErrorDetail 鍙兘鍚湇鍔＄璺緞绛夋晱鎰熶俊鎭紝浠呰惤搴擄紝涓嶄笅鍙戠粰瀹㈡埛绔€?@@ -374,8 +381,8 @@ func executeRenderTask(taskID string) {
+ 		finalOutput = subtitled
+ 	}
+ 
+-	// 闃舵浜旓細浜х墿娉ㄥ唽杩涚幇鏈夋枃浠朵綋绯伙紙/api/files/:id/content 鍙闂級銆?-	// 娴佸紡涓婁紶锛岄伩鍏嶆妸鎴愮墖鏁翠綋璇诲叆鍐呭瓨銆?+	// 闃舵浜旓細淇濆瓨鎴愮墖銆備紭鍏堟敞鍐岃繘瀵硅薄瀛樺偍锛?api/files/:id/content 鍙闂級锛?+	// 鏈厤缃璞″瓨鍌ㄦ椂钀藉埌鏈湴纾佺洏 <LOCAL_MEDIA_DIR>/<椤圭洰鍚?/锛屾寜椤圭洰鍒嗘枃浠跺す銆? 	outputFile, err := os.Open(finalOutput)
+ 	if err != nil {
+ 		failRenderTask(&task, fmt.Errorf("鎴愮墖璇诲彇澶辫触锛?w", err))
+@@ -394,17 +401,23 @@ func executeRenderTask(taskID string) {
+ 		return
+ 	}
+ 	userCtx := WithUser(context.Background(), model.AuthUser{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, Role: user.Role})
+-	uploaded, err := UploadStorageObjectStream(userCtx, "render-"+task.ID+".mp4", "video/mp4", outputFile, fileInfo.Size())
++	uploaded, uploadErr := UploadStorageObjectStream(userCtx, "render-"+task.ID+".mp4", "video/mp4", outputFile, fileInfo.Size())
+ 	outputFile.Close()
+-	if err != nil {
+-		failRenderTask(&task, fmt.Errorf("鎴愮墖淇濆瓨澶辫触锛?w", err))
+-		return
++	if uploadErr == nil {
++		task.OutputFileID = uploaded.ID
++	} else {
++		log.Printf("render output object storage unavailable, save to local disk id=%s err=%v", task.ID, uploadErr)
++		savedPath, saveErr := saveRenderOutputLocally(finalOutput, spec.Folder)
++		if saveErr != nil {
++			failRenderTask(&task, fmt.Errorf("鎴愮墖淇濆瓨澶辫触锛?w", saveErr))
++			return
++		}
++		task.LocalPath = savedPath
+ 	}
+ 
+ 	current := now()
+ 	task.Status = "completed"
+ 	task.Progress = 100
+-	task.OutputFileID = uploaded.ID
+ 	task.Seconds = strconv.FormatFloat(totalSeconds, 'f', 1, 64)
+ 	task.CompletedAt = current
+ 	task.UpdatedAt = current
+@@ -415,11 +428,144 @@ func executeRenderTask(taskID string) {
+ 	}
+ }
+ 
++// localMediaBaseDir 鏈湴濯掍綋鏍圭洰褰曪紙榛樿 D:/InfiniteCanvas锛夛紝鎴愮墖涓庢殏瀛樼礌鏉愰兘钀藉埌纾佺洏鍙鐩綍銆?+func localMediaBaseDir() string {
++	dir := strings.TrimSpace(config.Cfg.LocalMediaDir)
++	if dir == "" {
++		dir = "D:/InfiniteCanvas"
++	}
++	return dir
++}
++
++// sanitizeFolderName 鎶婇」鐩悕杞垚瀹夊叏鐨勬枃浠跺す鍚嶃€?+func sanitizeFolderName(name string) string {
++	name = strings.TrimSpace(name)
++	re := regexp.MustCompile(`[\\/:*?"<>|]+`)
++	name = strings.TrimSpace(re.ReplaceAllString(name, "_"))
++	if name == "" {
++		name = "鏈懡鍚嶉」鐩?
++	}
++	if len(name) > 80 {
++		name = name[:80]
++	}
++	return name
++}
++
++// copyLocalFile 澶嶅埗鏈湴鏂囦欢锛堟覆鏌撶礌鏉?file: 鏉ユ簮鐢級銆?+func copyLocalFile(src string, dest string) error {
++	in, err := os.Open(src)
++	if err != nil {
++		return err
++	}
++	defer in.Close()
++	out, err := os.Create(dest)
++	if err != nil {
++		return err
++	}
++	defer out.Close()
++	_, err = io.Copy(out, in)
++	return err
++}
++
++// StageLocalRenderMedia 鎶婂墠绔笂浼犵殑鏈湴濯掍綋鏆傚瓨鍒?<鏍圭洰褰?/<椤圭洰鍚?/media/锛岃繑鍥?file: 鏉ユ簮渚涙覆鏌撹鍙栥€?+func StageLocalRenderMedia(folder string, filename string, contentType string, data []byte) (string, error) {
++	if len(data) == 0 {
++		return "", errors.New("绱犳潗涓虹┖")
++	}
++	if int64(len(data)) > renderItemDownloadLimit {
++		return "", errors.New("绱犳潗杩囧ぇ")
++	}
++	dir := filepath.Join(localMediaBaseDir(), sanitizeFolderName(folder), "media")
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		return "", err
++	}
++	ext := strings.ToLower(filepath.Ext(filename))
++	if ext == "" {
++		ext = renderExtForMimeType(contentType)
++	}
++	if ext == "" {
++		ext = ".bin"
++	}
++	target := filepath.Join(dir, uuid.NewString()+ext)
++	if err := os.WriteFile(target, data, 0o644); err != nil {
++		return "", err
++	}
++	abs, err := filepath.Abs(target)
++	if err != nil {
++		abs = target
++	}
++	return "file:" + abs, nil
++}
++
++// saveRenderOutputLocally 鎶婃垚鐗囦繚瀛樺埌 <鏍圭洰褰?/<椤圭洰鍚?/ 涓嬬殑鏈湴鏂囦欢锛岃繑鍥炵粷瀵硅矾寰勩€?+func saveRenderOutputLocally(finalOutput string, folder string) (string, error) {
++	dir := filepath.Join(localMediaBaseDir(), sanitizeFolderName(folder))
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		return "", err
++	}
++	name := fmt.Sprintf("%s-%s.mp4", sanitizeFolderName(folder), time.Now().Format("20060102-150405"))
++	target := filepath.Join(dir, name)
++	src, err := os.Open(finalOutput)
++	if err != nil {
++		return "", err
++	}
++	defer src.Close()
++	dst, err := os.Create(target)
++	if err != nil {
++		return "", err
++	}
++	if _, err := io.Copy(dst, src); err != nil {
++		dst.Close()
++		return "", err
++	}
++	if err := dst.Close(); err != nil {
++		return "", err
++	}
++	abs, err := filepath.Abs(target)
++	if err != nil {
++		abs = target
++	}
++	return abs, nil
++}
++
++// RenderOutputLocalPath 杩斿洖鎴愮墖鍦ㄦ湰鏈虹殑淇濆瓨璺緞锛堟湰鍦颁繚瀛樻ā寮忥級锛屼緵娴佸紡涓嬪彂銆?+func RenderOutputLocalPath(taskID string) (string, error) {
++	task, found, err := repository.GetRenderTask(strings.TrimSpace(taskID))
++	if err != nil {
++		return "", err
++	}
++	if !found {
++		return "", errors.New("娓叉煋浠诲姟涓嶅瓨鍦?)
++	}
++	if strings.TrimSpace(task.LocalPath) == "" {
++		return "", errors.New("璇ユ垚鐗囨病鏈夋湰鍦版枃浠?)
++	}
++	return task.LocalPath, nil
++}
++
+ // downloadRenderItem 娴佸紡涓嬭浇绱犳潗鍒颁复鏃剁洰褰曪細瀛樺偍瀵硅薄璧?storage 鏈嶅姟锛宧ttp(s) 澶栭摼鍏堣繃 SSRF 鏍￠獙銆? func downloadRenderItem(ctx context.Context, source string, jobDir string, index int) (string, error) {
+ 	if err := os.MkdirAll(jobDir, 0755); err != nil {
+ 		return "", err
+ 	}
++	if strings.HasPrefix(source, "file:") {
++		src := strings.TrimSpace(strings.TrimPrefix(source, "file:"))
++		if src == "" {
++			return "", errors.New("鏈湴绱犳潗璺緞鏃犳晥")
++		}
++		info, err := os.Stat(src)
++		if err != nil || info.IsDir() {
++			return "", errors.New("鏈湴绱犳潗涓嶅瓨鍦?)
++		}
++		if info.Size() > renderItemDownloadLimit {
++			return "", errors.New("鏈湴绱犳潗杩囧ぇ")
++		}
++		dest := filepath.Join(jobDir, fmt.Sprintf("item-%03d%s", index, renderExtFromPath(src)))
++		if err := copyLocalFile(src, dest); err != nil {
++			return "", err
++		}
++		return dest, nil
++	}
+ 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+ 		parsed, err := url.Parse(source)
+ 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {

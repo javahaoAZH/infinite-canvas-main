@@ -8,7 +8,7 @@ import { isGeminiVeo31Model, normalizeGeminiVideoDuration, normalizeGeminiVideoR
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio } from "@/lib/seedance-video";
 import { isKIEGrokVideoModel, isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
 import { isAgnesVideoV25Model, isCogVideoX3Model, modelKey, normalizeCogVideoX3Duration, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
-import { downloadRemoteMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
+import { downloadRemoteMedia, downloadRemoteMediaWithAuth, mediaBearerForUrl, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
 import { imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
 import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig, type VideoElementReference } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -158,7 +158,7 @@ export async function pollCreatedVideoGenerationTask(config: AiConfig, task: Vid
         if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
         for (; ;) {
             if (dashscope && Date.now() > startedAt + DASHSCOPE_VIDEO_MAX_WAIT_MS) throw new VideoRequestError("百炼视频生成超时（20 分钟），请稍后在任务列表中查看结果", task);
-            const video = await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce()));
+            const video = await cacheRemotePipelineVideo(config, await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce())));
             onPoll?.(video);
             if (isFailedVideoStatus(video.status)) throw new VideoRequestError(readableVideoErrorMessage(video.error?.message), video);
             if (typeof video.progress === "number") onProgress?.(video.progress, video);
@@ -189,7 +189,7 @@ export async function pollVideoGenerationTaskStatus(config: AiConfig, task: Vide
     const result = directProvider
         ? await (await import("@/services/api/direct-ai")).pollDirectVideoTask(config, directProvider, pollId)
         : unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config), params: usesAccountProxy(config) ? { model } : undefined })).data);
-    return cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result)));
+    return cacheRemotePipelineVideo(config, await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result))));
 }
 
 export async function listVideoGenerationTasks(config: AiConfig) {
@@ -220,6 +220,25 @@ async function cacheProtectedGrokVideo(config: AiConfig, model: string, task: Vi
     if (!response.ok) throw new VideoRequestError(`视频内容下载失败：${response.status}`, task);
     const media = await uploadMediaFile(await response.blob(), "generated-video");
     return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey };
+}
+
+// 本地渠道（算力服务器 / comfyui2api）产物落本地：视频完成后把远程文件下载到本地存储，
+// 避免服务器关机后媒体失效；语义与上方 DashScope/Gemini/Grok 的 cacheProtected 一致。
+async function cacheRemotePipelineVideo(config: AiConfig, task: VideoResponse) {
+    const url = task.video_url || task.url || "";
+    if (!isCompletedVideoStatus(task.status) || task.storageKey) return task;
+    if (!/^https?:\/\//.test(url)) return task;
+    if (config.channelMode === "remote") return task; // 云端托管渠道自管 CDN，不重复缓存
+    const bearer = mediaBearerForUrl(config, url);
+    if (!bearer) return task;
+    try {
+        const blob = await downloadRemoteMediaWithAuth(url, bearer);
+        if (!blob.type.startsWith("video/")) return task;
+        const media = await uploadMediaFile(blob, "generated-video");
+        return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey };
+    } catch {
+        return task; // 下载失败时保留远程 URL，不阻塞主流程
+    }
 }
 
 async function createGrok2APIVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
@@ -338,7 +357,13 @@ async function createVideoRequestBody(config: AiConfig, model: string, prompt: s
     if (supportsVideoAudioGeneration(model)) body.append("video_generate_audio", String(boolConfig(config.videoGenerateAudio, false)));
     const imageReferenceLimit = kieKlingOmni === "text-to-video" ? 0 : kieKlingOmni === "reference-to-video" ? input.references.length : kieKlingOmni === "transformation" ? 4 : kling ? 2 : 9;
     const files = await Promise.all(input.references.slice(0, imageReferenceLimit).map(imageReferenceToFormValue));
-    files.forEach((file) => body.append("input_reference[]", file));
+    // 本地算力流水线（comfyui2api，渠道与 localChannelForActiveModel 同源）：上游只读 form.get("input_reference") 单文件，
+    // [] 数组形式会被静默丢弃导致图生视频退化为文生视频，故只附第一张；其他渠道保持 input_reference[] 原样
+    if (config.channelMode === "local" && files.length) {
+        body.append("input_reference", files[0]);
+    } else {
+        files.forEach((file) => body.append("input_reference[]", file));
+    }
     if (!kling && input.firstFrame) body.append("first_frame_url", await imageReferenceToFormValue(input.firstFrame));
     if (!kling && input.lastFrame) body.append("last_frame_url", await imageReferenceToFormValue(input.lastFrame));
     const videoFiles = kling && kieKlingOmni !== "reference-to-video" && kieKlingOmni !== "transformation" ? [] : await Promise.all(input.videoReferences.slice(0, kieKlingOmni ? 1 : input.videoReferences.length).map(mediaReferenceToFormValue));

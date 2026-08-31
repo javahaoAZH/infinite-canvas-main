@@ -1,0 +1,128 @@
+﻿diff --git a/web/src/app/(user)/drama/page.tsx b/web/src/app/(user)/drama/page.tsx
+index d9dd2fb..543f068 100644
+--- a/web/src/app/(user)/drama/page.tsx
++++ b/web/src/app/(user)/drama/page.tsx
+@@ -1,12 +1,15 @@
+ "use client";
+ 
+-import { ChevronLeft, ChevronRight, Drama, FolderPlus, PencilLine, Trash2 } from "lucide-react";
++import { ChevronLeft, ChevronRight, Drama, FolderPlus, Network, PencilLine, Trash2, Workflow } from "lucide-react";
+ import { useEffect, useState } from "react";
++import { useRouter } from "next/navigation";
+ import { App, Button, Empty, Input, Modal, Select, Steps } from "antd";
+ 
+-import { useConfigStore } from "@/stores/use-config-store";
++import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+ import { useDramaStore, useActiveDramaProject } from "@/stores/use-drama-store";
+ import { getBridgeSnapshot, onBridgeStatusChange } from "./services/drama-bridge";
++import { initDramaCanvasAutoSync, syncDramaProjectToCanvas } from "./services/drama-canvas-sync";
++import { ComfyWorkflowsModal } from "./components/comfy-workflows-modal";
+ import { CharactersStep } from "./components/characters-step";
+ import { DirectorEntry } from "./components/director/director-entry";
+ import { ScriptStep } from "./components/script-step";
+@@ -45,6 +48,10 @@ function BridgeStatusEntry() {
+ 
+ export default function DramaPage() {
+     const { message, modal } = App.useApp();
++    const router = useRouter();
++    useEffect(() => {
++        initDramaCanvasAutoSync();
++    }, []);
+     const projects = useDramaStore((state) => state.projects);
+     const createProject = useDramaStore((state) => state.createProject);
+     const openProject = useDramaStore((state) => state.openProject);
+@@ -52,6 +59,8 @@ export default function DramaPage() {
+     const deleteProject = useDramaStore((state) => state.deleteProject);
+     const updateProject = useDramaStore((state) => state.updateProject);
+     const project = useActiveDramaProject();
++    const effectiveConfig = useEffectiveConfig();
++    const [comfyOpen, setComfyOpen] = useState(false);
+     const [renameOpen, setRenameOpen] = useState(false);
+     const [renameValue, setRenameValue] = useState("");
+ 
+@@ -82,6 +91,19 @@ export default function DramaPage() {
+                         <div className="ml-auto flex flex-wrap items-center gap-2">
+                             <BridgeStatusEntry />
+                             <DirectorEntry project={project} />
++                            <Button
++                                icon={<Network className="size-4" />}
++                                onClick={() => {
++                                    const canvasProjectId = syncDramaProjectToCanvas(project.id);
++                                    if (!canvasProjectId) return message.info("鐢诲竷鏁版嵁姝ｅ湪鍔犺浇锛岃绋嶅悗鍐嶈瘯");
++                                    router.push(`/canvas/view?id=${canvasProjectId}`);
++                                }}
++                            >
++                                宸ヤ綔娴佺敾甯?+                            </Button>
++                            <Button icon={<Workflow className="size-4" />} onClick={() => setComfyOpen(true)}>
++                                ComfyUI 宸ヤ綔娴?+                            </Button>
+                             <Select
+                                 className="min-w-44"
+                                 value={project.id}
+@@ -158,6 +180,7 @@ export default function DramaPage() {
+                 </div>
+             </main>
+ 
++            <ComfyWorkflowsModal open={comfyOpen} onClose={() => setComfyOpen(false)} imageModel={effectiveConfig.imageModel || effectiveConfig.model} videoModel={effectiveConfig.videoModel || ""} />
+             <Modal
+                 title="閲嶅懡鍚嶆极鍓ч」鐩?
+                 open={renameOpen}
+diff --git a/web/src/app/(user)/drama/services/director-runner.ts b/web/src/app/(user)/drama/services/director-runner.ts
+index c1f461a..6e4de13 100644
+--- a/web/src/app/(user)/drama/services/director-runner.ts
++++ b/web/src/app/(user)/drama/services/director-runner.ts
+@@ -1,4 +1,5 @@
+ import { autoAssignViews, generateCharacterCandidates, generateShotImage, generateVoiceAudio, generateShotVideo, structureScript } from "@/app/(user)/drama/services/drama-generation";
++import { syncDramaProjectToCanvas } from "@/app/(user)/drama/services/drama-canvas-sync";
+ import { expandDirectorTasks } from "@/app/(user)/drama/services/director-planner";
+ import { getEffectiveConfig } from "@/stores/use-config-store";
+ import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
+@@ -23,6 +24,8 @@ export function startDirector(projectId: string) {
+     if (runningProjectId && runningProjectId !== projectId) return;
+     if (activeLoops.has(projectId)) return;
+     activeLoops.add(projectId);
++    // 鐢熶骇寮€濮嬪嵆鍦ㄧ敾甯冨缓绔嬬敓浜х嚎鍙鍖栵紙鍚庣画浜х墿鐢辫嚜鍔ㄥ悓姝ュ閲忔洿鏂帮級
++    syncDramaProjectToCanvas(projectId);
+     void directorLoop(projectId).finally(() => activeLoops.delete(projectId));
+ }
+ 
+diff --git a/web/src/services/api/render.ts b/web/src/services/api/render.ts
+index f15a91c..4ffc396 100644
+--- a/web/src/services/api/render.ts
++++ b/web/src/services/api/render.ts
+@@ -24,6 +24,7 @@ export type RenderTimelineSpec = {
+     items: RenderTimelineItem[];
+     srt?: string;
+     burnSubtitle?: boolean;
++    folder?: string;
+ };
+ 
+ export type RenderTaskResponse = {
+@@ -35,6 +36,7 @@ export type RenderTaskResponse = {
+     fileId?: string;
+     url?: string;
+     video_url?: string;
++    localPath?: string;
+     error?: { message?: string };
+     createdAt?: string;
+     updatedAt?: string;
+@@ -56,6 +58,21 @@ export function createRenderTask(token: string, timeline: RenderTimelineSpec) {
+     return apiPost<RenderTaskResponse>("/api/v1/render/tasks", { timeline }, token);
+ }
+ 
++// 鎶婃祻瑙堝櫒鏈湴濯掍綋锛坆lob锛夋殏瀛樺埌鍚庣鏈湴纾佺洏鐨勯」鐩枃浠跺す锛岃繑鍥?file: 鏉ユ簮锛屼緵涓€閿垚鐗囧紩鎿庤鍙?+export async function stageLocalRenderMedia(token: string, blob: Blob, folder: string, filename: string): Promise<string> {
++    const formData = new FormData();
++    formData.append("file", blob, filename);
++    formData.append("folder", folder);
++    const response = await fetch("/api/v1/render/local-media", {
++        method: "POST",
++        headers: { Authorization: `Bearer ${token}` },
++        body: formData,
++    });
++    const payload = (await response.json().catch(() => null)) as { code?: number; msg?: string; data?: { source?: string } } | null;
++    if (!response.ok || payload?.code !== 0 || !payload.data?.source) throw new Error(payload?.msg || "鏈湴濯掍綋鏆傚瓨澶辫触");
++    return payload.data.source;
++}
++
+ export function listRenderTasks(token: string) {
+     return apiGet<RenderTaskResponse[]>("/api/v1/render/tasks", undefined, token);
+ }

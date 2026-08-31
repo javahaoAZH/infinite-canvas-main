@@ -1,4 +1,5 @@
 import { autoAssignViews, generateCharacterCandidates, generateShotImage, generateVoiceAudio, generateShotVideo, structureScript } from "@/app/(user)/drama/services/drama-generation";
+import { syncDramaProjectToCanvas } from "@/app/(user)/drama/services/drama-canvas-sync";
 import { expandDirectorTasks } from "@/app/(user)/drama/services/director-planner";
 import { getEffectiveConfig } from "@/stores/use-config-store";
 import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
@@ -23,6 +24,8 @@ export function startDirector(projectId: string) {
     if (runningProjectId && runningProjectId !== projectId) return;
     if (activeLoops.has(projectId)) return;
     activeLoops.add(projectId);
+    // 生产开始即在画布建立生产线可视化（后续产物由自动同步增量更新）
+    syncDramaProjectToCanvas(projectId);
     void directorLoop(projectId).finally(() => activeLoops.delete(projectId));
 }
 

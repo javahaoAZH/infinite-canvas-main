@@ -52,6 +52,8 @@ export type DramaProject = {
     shotImages: Record<string, DramaMedia>;
     shotVideos: Record<string, DramaMedia>;
     shotAudios: Record<string, DramaMedia>;
+    // 关联的生产线画布项目（实时同步用）；首次同步时创建并回填
+    canvasProjectId?: string;
 };
 
 type DramaStore = {
@@ -65,6 +67,15 @@ type DramaStore = {
     genre: string;
     // 场景/世界观预设（drama/prompts.ts 中 SCENE_PRESETS 的 id），空字符串表示不指定，角色四视图 / 分镜图 / 图生视频三个视觉步骤共用
     scene: string;
+    // 媒体生成忙碌登记（不持久化）：key 为 `${projectId}:${kind}:${subjectId}`，kind 取 character/shotImage/shotVideo/audio；供画布实时同步渲染「生成中」占位节点
+    busyMedia: Record<string, { kind: string; startedAt: number }>;
+    setBusyMedia: (key: string, value: { kind: string; startedAt: number }) => void;
+    // startedAt 可选：传入时仅当登记值一致才清除，防并发重入误清新登记；不传则照旧按键清除
+    clearBusyMedia: (key: string, startedAt?: number) => void;
+    // 媒体生成失败登记（不持久化，不进 partialize）：key 与 busyMedia 同格式；手动步骤/导演台生成失败时写入，画布同步优先读取展示失败原因
+    failedMedia: Record<string, { error: string; at: number }>;
+    setFailedMedia: (key: string, error: string) => void;
+    clearFailedMedia: (key: string) => void;
     createProject: (title?: string) => string;
     openProject: (id: string) => void;
     renameProject: (id: string, title: string) => void;
@@ -157,6 +168,27 @@ export const useDramaStore = create<DramaStore>()(
             customArtStyle: "",
             genre: "",
             scene: "",
+            busyMedia: {},
+            setBusyMedia: (key, value) => set((state) => ({ busyMedia: { ...state.busyMedia, [key]: value } })),
+            clearBusyMedia: (key, startedAt) =>
+                set((state) => {
+                    const registered = state.busyMedia[key];
+                    if (!registered) return state;
+                    // 登记值比对：并发重入时新登记会覆盖旧值，旧的 finally 不应误清新登记；仅登记时间一致才删，不一致返回原状态（重新登记则重新写入，避免重复删除导致状态对象异常变动）
+                    if (startedAt !== undefined && registered.startedAt !== startedAt) return state;
+                    const busyMedia = { ...state.busyMedia };
+                    delete busyMedia[key];
+                    return { busyMedia };
+                }),
+            failedMedia: {},
+            setFailedMedia: (key, error) => set((state) => ({ failedMedia: { ...state.failedMedia, [key]: { error, at: Date.now() } } })),
+            clearFailedMedia: (key) =>
+                set((state) => {
+                    if (!(key in state.failedMedia)) return state;
+                    const failedMedia = { ...state.failedMedia };
+                    delete failedMedia[key];
+                    return { failedMedia };
+                }),
             createProject: (title) => {
                 const project = createDramaProject(title || "");
                 set((state) => ({ projects: [project, ...state.projects], activeId: project.id }));

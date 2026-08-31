@@ -1,0 +1,278 @@
+﻿diff --git a/handler/ai.go b/handler/ai.go
+index 0720247..cb21608 100644
+--- a/handler/ai.go
++++ b/handler/ai.go
+@@ -94,6 +94,22 @@ func AITTSVoices(w http.ResponseWriter, r *http.Request) {
+ 	proxyAIGetRequest(w, r, "/tts/voices?model="+url.QueryEscape(modelName))
+ }
+ 
++// AIComfyWorkflows 浠ｇ悊绠楀姏鏈嶅姟鍣ㄤ笂 comfyui2api 鐨?ComfyUI 宸ヤ綔娴佹竻鍗曪紙涓婃父 /v1/workflows锛夛紝
++// 娓犻亾涓庨壌鏉冪敱 model 鍙傛暟缁忕粺涓€ AI 浠ｇ悊閫夋嫨锛屽墠绔棤闇€鐩磋繛锛堣閬胯法鍩燂級銆?+func AIComfyWorkflows(w http.ResponseWriter, r *http.Request) {
++	proxyAIGetRequest(w, r, "/workflows")
++}
++
++// AIComfyQueue 浠ｇ悊绠楀姏鏈嶅姟鍣?comfyui2api 鐨勯槦鍒楀揩鐓э紙涓婃父 /v1/queue锛夛紝鍚疮璁¤鏁颁笌鍏ㄩ噺浠诲姟锛屼緵鍓嶇杞鎵ц鐘舵€併€?+func AIComfyQueue(w http.ResponseWriter, r *http.Request) {
++	proxyAIGetRequest(w, r, "/queue")
++}
++
++// AIComfyJob 浠ｇ悊绠楀姏鏈嶅姟鍣?comfyui2api 鐨勫崟浠诲姟璇︽儏锛堜笂娓?/v1/jobs/{job_id}锛夛紝鍝嶅簲灏忥紝閫傚悎浣滆疆璇富鎺ュ彛銆?+func AIComfyJob(w http.ResponseWriter, r *http.Request, id string) {
++	proxyAIGetRequest(w, r, "/jobs/"+url.PathEscape(id))
++}
++
+ func proxyAIGetRequest(w http.ResponseWriter, r *http.Request, path string) {
+ 	startedAt := time.Now()
+ 	user, ok := service.UserFromContext(r.Context())
+diff --git a/router/router.go b/router/router.go
+index 730c3fc..2c2712c 100644
+--- a/router/router.go
++++ b/router/router.go
+@@ -56,6 +56,11 @@ func New() *gin.Engine {
+ 	v1.POST("/chat/completions", gin.WrapF(handler.AIChatCompletions))
+ 	v1.POST("/audio/speech", gin.WrapF(handler.AIAudioSpeech))
+ 	v1.GET("/tts/voices", gin.WrapF(handler.AITTSVoices))
++	v1.GET("/comfy/workflows", gin.WrapF(handler.AIComfyWorkflows))
++	v1.GET("/comfy/queue", gin.WrapF(handler.AIComfyQueue))
++	v1.GET("/comfy/jobs/:id", func(c *gin.Context) {
++		handler.AIComfyJob(c.Writer, c.Request, c.Param("id"))
++	})
+ 	v1.POST("/canvas/tasks/delete", gin.WrapF(handler.DeleteUserCanvasTasks))
+ 	v1.POST("/canvas/image-tasks", gin.WrapF(handler.CreateCanvasImageTask))
+ 	v1.GET("/canvas/image-tasks", gin.WrapF(handler.UserCanvasImageTasks))
+@@ -88,6 +93,10 @@ func New() *gin.Engine {
+ 	v1.DELETE("/render/tasks/:id", func(c *gin.Context) {
+ 		handler.DeleteUserRenderTask(c.Writer, c.Request, c.Param("id"))
+ 	})
++	v1.GET("/render/tasks/:id/output", func(c *gin.Context) {
++		handler.ServeRenderOutput(c.Writer, c.Request, c.Param("id"))
++	})
++	v1.POST("/render/local-media", gin.WrapF(handler.StageRenderMedia))
+ 	v1.GET("/videos/:id", func(c *gin.Context) {
+ 		handler.AIVideo(c.Writer, c.Request, c.Param("id"))
+ 	})
+diff --git a/web/src/app/(user)/canvas/components/canvas-render-modal.tsx b/web/src/app/(user)/canvas/components/canvas-render-modal.tsx
+index 21f82f0..fbebd83 100644
+--- a/web/src/app/(user)/canvas/components/canvas-render-modal.tsx
++++ b/web/src/app/(user)/canvas/components/canvas-render-modal.tsx
+@@ -356,6 +356,7 @@ export function CanvasRenderModal({ open, onClose }: { open: boolean; onClose: (
+         height,
+         srt: srtText,
+         burnSubtitle: burn,
++        folder: project?.title,
+         items: selectedItems.map((item) => ({
+             kind: item.kind,
+             source: item.source,
+diff --git a/web/src/app/(user)/canvas/view/canvas-client-page.tsx b/web/src/app/(user)/canvas/view/canvas-client-page.tsx
+index 73c0cc3..db76823 100644
+--- a/web/src/app/(user)/canvas/view/canvas-client-page.tsx
++++ b/web/src/app/(user)/canvas/view/canvas-client-page.tsx
+@@ -5228,7 +5228,7 @@ function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefine
+ }
+ 
+ function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
+-    return nodes.map((node) => (node.metadata?.status === "loading" && !canvasRecoverableTaskId(node) ? { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: "椤甸潰鍒锋柊鍚庣敓鎴愬凡涓柇锛岃閲嶆柊鐢熸垚銆? } } : node));
++    return nodes.map((node) => (node.metadata?.status === "loading" && !node.id.startsWith("drama-sync:") && !canvasRecoverableTaskId(node) ? { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: "椤甸潰鍒锋柊鍚庣敓鎴愬凡涓柇锛岃閲嶆柊鐢熸垚銆? } } : node));
+ }
+ 
+ function canvasRecoverableTaskId(node: CanvasNodeData) {
+diff --git a/web/src/services/api/image.ts b/web/src/services/api/image.ts
+index 7dc6900..85e4ce9 100644
+--- a/web/src/services/api/image.ts
++++ b/web/src/services/api/image.ts
+@@ -6,7 +6,8 @@ import { dataUrlToFile } from "@/lib/image-utils";
+ import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
+ import { isMimoChannel, mimoModels } from "@/lib/mimo-tts";
+ import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, normalizeGeminiBaseUrl } from "@/lib/gemini";
+-import { imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
++import { imageToDataUrl, resolveImageUrl, uploadImage } from "@/services/image-storage";
++import { downloadRemoteMediaWithAuth, mediaBearerForUrl } from "@/services/file-storage";
+ import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
+ import { useUserStore } from "@/stores/use-user-store";
+ import type { ReferenceImage } from "@/types/image";
+@@ -1015,9 +1016,30 @@ async function requestImages(config: AiConfig & { seedIndex?: number; seedCount?
+     return references.length ? requestImageEditSingle(config, prompt, references, params) : requestImageGenerationSingle(config, prompt, params);
+ }
+ 
++// 鏈湴娓犻亾锛堢畻鍔涙湇鍔″櫒绛夛級鍑哄浘浜х墿钀芥湰鍦帮細鍙椾繚鎶よ繙绔?URL 鐨勫嚭鍥剧粨鏋滅粡閴存潈浠ｇ悊涓嬭浇涓?blob 鍚庤蛋鏃㈡湁鎸佷箙鍖栵紙uploadImage锛夛紝
++// 澶辫触闈欓粯鍥為€€鍘熺粨鏋滐紱璇箟涓庤棰戜晶 cacheRemotePipelineVideo 涓€鑷?+async function cacheRemotePipelineImages(config: AiConfig, images: GeneratedImage[]): Promise<GeneratedImage[]> {
++    if (config.channelMode === "remote") return images; // 浜戠鎵樼娓犻亾鑷 CDN锛屼笉閲嶅缂撳瓨
++    return Promise.all(
++        images.map(async (image) => {
++            if (!/^https?:\/\//.test(image.dataUrl)) return image;
++            const bearer = mediaBearerForUrl(config, image.dataUrl);
++            if (!bearer) return image;
++            try {
++                const blob = await downloadRemoteMediaWithAuth(image.dataUrl, bearer);
++                if (!blob.type.startsWith("image/")) return image;
++                const uploaded = await uploadImage(blob);
++                return { ...image, dataUrl: uploaded.url };
++            } catch {
++                return image; // 涓嬭浇澶辫触鏃朵繚鐣欒繙绔?URL锛屼笉闃诲涓绘祦绋?+            }
++        }),
++    );
++}
++
+ export async function requestGeneration(config: AiConfig & { seedIndex?: number; seedCount?: number }, prompt: string) {
+     try {
+-        const images = await requestImages(config, prompt, []);
++        const images = await cacheRemotePipelineImages(config, await requestImages(config, prompt, []));
+         refreshRemoteUser(config);
+         return images;
+     } catch (error) {
+@@ -1028,7 +1050,7 @@ export async function requestGeneration(config: AiConfig & { seedIndex?: number;
+ 
+ export async function requestEdit(config: AiConfig & { seedIndex?: number; seedCount?: number }, prompt: string, references: ReferenceImage[]) {
+     try {
+-        const images = await requestImages(config, prompt, references);
++        const images = await cacheRemotePipelineImages(config, await requestImages(config, prompt, references));
+         refreshRemoteUser(config);
+         return images;
+     } catch (error) {
+diff --git a/web/src/services/api/video.ts b/web/src/services/api/video.ts
+index a034281..201c8f3 100644
+--- a/web/src/services/api/video.ts
++++ b/web/src/services/api/video.ts
+@@ -8,7 +8,7 @@ import { isGeminiVeo31Model, normalizeGeminiVideoDuration, normalizeGeminiVideoR
+ import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio } from "@/lib/seedance-video";
+ import { isKIEGrokVideoModel, isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
+ import { isAgnesVideoV25Model, isCogVideoX3Model, modelKey, normalizeCogVideoX3Duration, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
+-import { downloadRemoteMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
++import { downloadRemoteMedia, downloadRemoteMediaWithAuth, mediaBearerForUrl, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
+ import { imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
+ import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig, type VideoElementReference } from "@/stores/use-config-store";
+ import { useUserStore } from "@/stores/use-user-store";
+@@ -158,7 +158,7 @@ export async function pollCreatedVideoGenerationTask(config: AiConfig, task: Vid
+         if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
+         for (; ;) {
+             if (dashscope && Date.now() > startedAt + DASHSCOPE_VIDEO_MAX_WAIT_MS) throw new VideoRequestError("鐧剧偧瑙嗛鐢熸垚瓒呮椂锛?0 鍒嗛挓锛夛紝璇风◢鍚庡湪浠诲姟鍒楄〃涓煡鐪嬬粨鏋?, task);
+-            const video = await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce()));
++            const video = await cacheRemotePipelineVideo(config, await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce())));
+             onPoll?.(video);
+             if (isFailedVideoStatus(video.status)) throw new VideoRequestError(readableVideoErrorMessage(video.error?.message), video);
+             if (typeof video.progress === "number") onProgress?.(video.progress, video);
+@@ -189,7 +189,7 @@ export async function pollVideoGenerationTaskStatus(config: AiConfig, task: Vide
+     const result = directProvider
+         ? await (await import("@/services/api/direct-ai")).pollDirectVideoTask(config, directProvider, pollId)
+         : unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config), params: usesAccountProxy(config) ? { model } : undefined })).data);
+-    return cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result)));
++    return cacheRemotePipelineVideo(config, await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result))));
+ }
+ 
+ export async function listVideoGenerationTasks(config: AiConfig) {
+@@ -222,6 +222,25 @@ async function cacheProtectedGrokVideo(config: AiConfig, model: string, task: Vi
+     return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey };
+ }
+ 
++// 鏈湴娓犻亾锛堢畻鍔涙湇鍔″櫒 / comfyui2api锛変骇鐗╄惤鏈湴锛氳棰戝畬鎴愬悗鎶婅繙绋嬫枃浠朵笅杞藉埌鏈湴瀛樺偍锛?+// 閬垮厤鏈嶅姟鍣ㄥ叧鏈哄悗濯掍綋澶辨晥锛涜涔変笌涓婃柟 DashScope/Gemini/Grok 鐨?cacheProtected 涓€鑷淬€?+async function cacheRemotePipelineVideo(config: AiConfig, task: VideoResponse) {
++    const url = task.video_url || task.url || "";
++    if (!isCompletedVideoStatus(task.status) || task.storageKey) return task;
++    if (!/^https?:\/\//.test(url)) return task;
++    if (config.channelMode === "remote") return task; // 浜戠鎵樼娓犻亾鑷 CDN锛屼笉閲嶅缂撳瓨
++    const bearer = mediaBearerForUrl(config, url);
++    if (!bearer) return task;
++    try {
++        const blob = await downloadRemoteMediaWithAuth(url, bearer);
++        if (!blob.type.startsWith("video/")) return task;
++        const media = await uploadMediaFile(blob, "generated-video");
++        return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey };
++    } catch {
++        return task; // 涓嬭浇澶辫触鏃朵繚鐣欒繙绋?URL锛屼笉闃诲涓绘祦绋?+    }
++}
++
+ async function createGrok2APIVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
+     const body: Record<string, unknown> = {
+         model,
+diff --git a/web/src/services/file-storage.ts b/web/src/services/file-storage.ts
+index 6961199..08c66ea 100644
+--- a/web/src/services/file-storage.ts
++++ b/web/src/services/file-storage.ts
+@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
+ import { deleteAnonymousStorageFile, uploadAnonymousStorageFile } from "@/services/anonymous-storage";
+ import { apiGet } from "@/services/api/request";
+ import { canUseGlobalStorage, getProxyUrl, loadUserStorageProvider, toProviderPayload, type StorageConfig, type UserWebDAVStorageProvider } from "@/services/image-storage";
++import { localChannelForActiveModel, normalizeLocalChannels, type AiConfig } from "@/stores/use-config-store";
+ import { useUserStore } from "@/stores/use-user-store";
+ 
+ export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
+@@ -51,6 +52,46 @@ export async function downloadRemoteMedia(url: string) {
+     return blob;
+ }
+ 
++// 甯﹂壌鏉冧笅杞借繙绋嬪獟浣擄細鏈湴娓犻亾锛堝绠楀姏鏈嶅姟鍣級鐨勪骇鐗╂枃浠堕渶瑕?Bearer 浠ょ墝锛岀粡鍚庣浠ｇ悊閫忎紶閴存潈澶翠笅杞?+export async function downloadRemoteMediaWithAuth(url: string, bearerToken: string) {
++    const headers: Record<string, string> = {};
++    if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
++    const response = await fetch(getProxyUrl(url), { headers });
++    if (!response.ok) throw new Error(`濯掍綋涓嬭浇澶辫触锛?{response.status}`);
++    const blob = await response.blob();
++    if (blob.type.includes("json") || blob.type.startsWith("text/")) {
++        const text = await blob.text().catch(() => "");
++        let message = "";
++        try {
++            const payload = JSON.parse(text) as { msg?: string; message?: string };
++            message = payload.msg || payload.message || "";
++        } catch {
++            message = text;
++        }
++        throw new Error(message || "濯掍綋涓嬭浇澶辫触");
++    }
++    return blob;
++}
++
++// 瑙ｆ瀽鏈湴娓犻亾杩滅▼ URL 鐨?Bearer 鍑瘉锛氭寜 host 鍖归厤娓犻亾鍙?apiKey锛屾湭鍛戒腑鎴?url 闈炴硶鏃堕€€鍥炲綋鍓嶆ā鍨嬫笭閬?绯荤粺 apiKey锛堝浘鐗?瑙嗛缂撳瓨鍏辩敤锛?+export function mediaBearerForUrl(config: AiConfig, url: string): string {
++    const channels = normalizeLocalChannels(config);
++    try {
++        const host = new URL(url).host;
++        const byHost = channels.find((channel) => {
++            try {
++                return channel.baseUrl ? new URL(channel.baseUrl).host === host : false;
++            } catch {
++                return false;
++            }
++        });
++        if (byHost?.apiKey) return byHost.apiKey;
++    } catch {
++        // url 闈炴硶鏃堕€€鍥為粯璁ゆ笭閬撹В鏋?+    }
++    return localChannelForActiveModel(config)?.apiKey || config.apiKey || "";
++}
++
+ export async function uploadRemoteMediaToServer(url: string, filename: string): Promise<UploadedFile> {
+     const blob = await downloadRemoteMedia(url);
+     return uploadMediaBlobToServer(blob, filename);
+diff --git a/web/src/stores/use-drama-store.ts b/web/src/stores/use-drama-store.ts
+index 2386ba8..403aa0e 100644
+--- a/web/src/stores/use-drama-store.ts
++++ b/web/src/stores/use-drama-store.ts
+@@ -52,6 +52,8 @@ export type DramaProject = {
+     shotImages: Record<string, DramaMedia>;
+     shotVideos: Record<string, DramaMedia>;
+     shotAudios: Record<string, DramaMedia>;
++    // 鍏宠仈鐨勭敓浜х嚎鐢诲竷椤圭洰锛堝疄鏃跺悓姝ョ敤锛夛紱棣栨鍚屾鏃跺垱寤哄苟鍥炲～
++    canvasProjectId?: string;
+ };
+ 
+ type DramaStore = {
+@@ -65,6 +67,10 @@ type DramaStore = {
+     genre: string;
+     // 鍦烘櫙/涓栫晫瑙傞璁撅紙drama/prompts.ts 涓?SCENE_PRESETS 鐨?id锛夛紝绌哄瓧绗︿覆琛ㄧず涓嶆寚瀹氾紝瑙掕壊鍥涜鍥?/ 鍒嗛暅鍥?/ 鍥剧敓瑙嗛涓変釜瑙嗚姝ラ鍏辩敤
+     scene: string;
++    // 濯掍綋鐢熸垚蹇欑鐧昏锛堜笉鎸佷箙鍖栵級锛歬ey 涓?`${projectId}:${kind}:${subjectId}`锛宬ind 鍙?character/shotImage/shotVideo/audio锛涗緵鐢诲竷瀹炴椂鍚屾娓叉煋銆岀敓鎴愪腑銆嶅崰浣嶈妭鐐?+    busyMedia: Record<string, { kind: string; startedAt: number }>;
++    setBusyMedia: (key: string, value: { kind: string; startedAt: number }) => void;
++    clearBusyMedia: (key: string) => void;
+     createProject: (title?: string) => string;
+     openProject: (id: string) => void;
+     renameProject: (id: string, title: string) => void;
+@@ -157,6 +163,15 @@ export const useDramaStore = create<DramaStore>()(
+             customArtStyle: "",
+             genre: "",
+             scene: "",
++            busyMedia: {},
++            setBusyMedia: (key, value) => set((state) => ({ busyMedia: { ...state.busyMedia, [key]: value } })),
++            clearBusyMedia: (key) =>
++                set((state) => {
++                    if (!(key in state.busyMedia)) return state;
++                    const busyMedia = { ...state.busyMedia };
++                    delete busyMedia[key];
++                    return { busyMedia };
++                }),
+             createProject: (title) => {
+                 const project = createDramaProject(title || "");
+                 set((state) => ({ projects: [project, ...state.projects], activeId: project.id }));

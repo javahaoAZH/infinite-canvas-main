@@ -25,6 +25,7 @@ type Config struct {
 	LinuxDoUserInfoURL  string `env:"LINUX_DO_USERINFO_URL" envDefault:"https://connect.linux.do/api/user"`
 	AILogDir            string `env:"AI_LOG_DIR" envDefault:"data/logs/ai-calls"`
 	FFMPEGPath          string `env:"FFMPEG_PATH"`
+	LocalMediaDir       string `env:"LOCAL_MEDIA_DIR" envDefault:"D:/InfiniteCanvas"`
 }
 
 var Cfg Config

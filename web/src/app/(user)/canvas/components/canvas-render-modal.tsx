@@ -17,10 +17,13 @@ import {
     getRenderTask,
     listRenderTasks,
     RENDER_POLL_INTERVAL_MS,
+    stageLocalRenderMedia,
     type RenderFFmpegStatus,
     type RenderTaskResponse,
     type RenderTimelineSpec,
 } from "@/services/api/render";
+import { getMediaBlob } from "@/services/file-storage";
+import { getImageBlob } from "@/services/image-storage";
 import { buildSrtFromDialogue, createSubtitleAbortSignal, splitDialogueWithAI } from "@/services/api/subtitle";
 
 type RenderModalItem = {
@@ -28,6 +31,7 @@ type RenderModalItem = {
     kind: "video" | "image" | "audio";
     title: string;
     source: string;
+    storageKey: string;
     selected: boolean;
     seconds: number;
     preview?: string;
@@ -158,19 +162,22 @@ export function CanvasRenderModal({ open, onClose }: { open: boolean; onClose: (
                 const storageKey = node.metadata?.storageKey || "";
                 const content = node.metadata?.content || "";
                 const source = storageKey.startsWith("server:") ? storageKey : /^https?:\/\//.test(content) ? content : "";
+                // blob: 本地素材：已登录时提交前暂存上传换成 file: 源参与成片（与漫剧成片同构）；未登录保持原「仅保存在本地」拒绝行为（B8）
+                const stagingAvailable = content.startsWith("blob:") && Boolean(storageKey) && Boolean(token);
                 const audioSeconds = node.metadata?.durationMs ? Math.max(1, Math.round(node.metadata.durationMs / 1000)) : 5;
                 return {
                     key: node.id,
                     kind,
                     title: node.title || (kind === "video" ? "视频" : kind === "audio" ? "配音" : "图片"),
                     source,
-                    selected: Boolean(source),
+                    storageKey,
+                    selected: Boolean(source) || stagingAvailable,
                     seconds: kind === "audio" ? audioSeconds : 5,
                     preview: kind === "image" && content.startsWith("data:image") ? content : undefined,
-                    localOnly: !source,
+                    localOnly: !source && !stagingAvailable,
                 };
             });
-    }, [project]);
+    }, [project, token]);
 
     // 打开弹窗时探测 FFmpeg、收集画布素材，并恢复最近任务（进行中任务自动续轮询）。
     useEffect(() => {
@@ -349,19 +356,39 @@ export function CanvasRenderModal({ open, onClose }: { open: boolean; onClose: (
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
 
-    // 与提交渲染一致的时间线构造逻辑，供成片与剪映工程导出复用。
-    const buildTimeline = (srtText: string, burn: boolean): RenderTimelineSpec => ({
+    // 与提交渲染一致的时间线构造逻辑，供成片与剪映工程导出复用；sourceOverrides 为暂存后的 file: 源（按条目 key 覆盖 blob: 源）
+    const buildTimeline = (srtText: string, burn: boolean, sourceOverrides?: Map<string, string>): RenderTimelineSpec => ({
         fps,
         width,
         height,
         srt: srtText,
         burnSubtitle: burn,
+        folder: project?.title,
         items: selectedItems.map((item) => ({
             kind: item.kind,
-            source: item.source,
+            source: sourceOverrides?.get(item.key) || item.source,
             durationMs: item.kind === "video" ? undefined : Math.max(1, Math.round(item.seconds * 1000)),
         })),
     });
+
+    // blob: 本地素材暂存上传（与 createDramaRender 同构）：按 storageKey 取 blob → stageLocalRenderMedia 换成 file: 源，并发限 2；
+    // 未登录返回空表（此时本地条目仍为禁选，不会出现需暂存的条目）
+    const stageLocalOnlySources = async (): Promise<Map<string, string>> => {
+        const overrides = new Map<string, string>();
+        if (!token) return overrides;
+        const jobs = selectedItems
+            .filter((item) => !item.source && item.storageKey)
+            .map((item) => async () => {
+                const blob = item.storageKey.startsWith("image:") ? await getImageBlob(item.storageKey) : await getMediaBlob(item.storageKey);
+                if (!blob) throw new Error(`「${item.title}」的本地缓存已失效，请重新生成`);
+                const extension = item.kind === "video" ? "mp4" : item.kind === "audio" ? "mp3" : "png";
+                overrides.set(item.key, await stageLocalRenderMedia(token, blob, project?.title || "", `${item.title}.${extension}`));
+            });
+        for (let index = 0; index < jobs.length; index += 2) {
+            await Promise.all(jobs.slice(index, index + 2).map((job) => job()));
+        }
+        return overrides;
+    };
 
     const handleSubmit = async () => {
         if (!token || selectedItems.length === 0) return;
@@ -373,9 +400,10 @@ export function CanvasRenderModal({ open, onClose }: { open: boolean; onClose: (
         setSubmitting(true);
         setSubmitError("");
         try {
+            const sourceOverrides = await stageLocalOnlySources();
             setSubmittedSrt(subtitles ? srt : "");
             setSubmittedBurn(wantBurn);
-            setTask(await createRenderTask(token, buildTimeline(wantBurn ? srt : "", wantBurn)));
+            setTask(await createRenderTask(token, buildTimeline(wantBurn ? srt : "", wantBurn, sourceOverrides)));
         } catch (error) {
             setSubmitError(error instanceof Error ? error.message : "提交失败，请稍后重试");
         } finally {
@@ -392,7 +420,8 @@ export function CanvasRenderModal({ open, onClose }: { open: boolean; onClose: (
         }
         setExporting(true);
         try {
-            const blob = await exportJianyingDraft(token, buildTimeline(subtitles ? srt : "", false));
+            const sourceOverrides = await stageLocalOnlySources();
+            const blob = await exportJianyingDraft(token, buildTimeline(subtitles ? srt : "", false, sourceOverrides));
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement("a");
             anchor.href = url;

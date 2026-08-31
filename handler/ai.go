@@ -94,6 +94,22 @@ func AITTSVoices(w http.ResponseWriter, r *http.Request) {
 	proxyAIGetRequest(w, r, "/tts/voices?model="+url.QueryEscape(modelName))
 }
 
+// AIComfyWorkflows 代理算力服务器上 comfyui2api 的 ComfyUI 工作流清单（上游 /v1/workflows），
+// 渠道与鉴权由 model 参数经统一 AI 代理选择，前端无需直连（规避跨域）。
+func AIComfyWorkflows(w http.ResponseWriter, r *http.Request) {
+	proxyAIGetRequest(w, r, "/workflows")
+}
+
+// AIComfyQueue 代理算力服务器 comfyui2api 的队列快照（上游 /v1/queue），含累计计数与全量任务，供前端轮询执行状态。
+func AIComfyQueue(w http.ResponseWriter, r *http.Request) {
+	proxyAIGetRequest(w, r, "/queue")
+}
+
+// AIComfyJob 代理算力服务器 comfyui2api 的单任务详情（上游 /v1/jobs/{job_id}），响应小，适合作轮询主接口。
+func AIComfyJob(w http.ResponseWriter, r *http.Request, id string) {
+	proxyAIGetRequest(w, r, "/jobs/"+url.PathEscape(id))
+}
+
 func proxyAIGetRequest(w http.ResponseWriter, r *http.Request, path string) {
 	startedAt := time.Now()
 	user, ok := service.UserFromContext(r.Context())
@@ -321,6 +337,10 @@ func copyAIResponseBody(w http.ResponseWriter, body io.Reader) string {
 }
 
 func saveAIProxyLog(context aiLogContext, status int, responseBody string, errorMessage string) {
+	// ComfyUI 代理轮询接口（/workflows、/queue、/jobs/...）每 5 秒一打，跳过落库避免刷爆 AI 调用日志表
+	if context.Endpoint == "/workflows" || context.Endpoint == "/queue" || strings.HasPrefix(context.Endpoint, "/jobs/") {
+		return
+	}
 	if context.StartedAt.IsZero() {
 		context.StartedAt = time.Now()
 	}

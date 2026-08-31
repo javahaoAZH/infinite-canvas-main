@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tigerowo/infinite-canvas/config"
 	"github.com/tigerowo/infinite-canvas/model"
 	"github.com/tigerowo/infinite-canvas/repository"
 )
@@ -176,6 +177,12 @@ func RenderTaskResponse(task model.RenderTask) map[string]any {
 		result["url"] = contentURL
 		result["video_url"] = contentURL
 		result["data"] = []map[string]any{{"url": contentURL}}
+	} else if strings.TrimSpace(task.LocalPath) != "" {
+		outputURL := "/api/v1/render/tasks/" + task.ID + "/output"
+		result["url"] = outputURL
+		result["video_url"] = outputURL
+		result["data"] = []map[string]any{{"url": outputURL}}
+		result["localPath"] = task.LocalPath
 	}
 	if task.Status == "failed" {
 		// ErrorDetail 可能含服务端路径等敏感信息，仅落库，不下发给客户端。
@@ -374,8 +381,8 @@ func executeRenderTask(taskID string) {
 		finalOutput = subtitled
 	}
 
-	// 阶段五：产物注册进现有文件体系（/api/files/:id/content 可访问）。
-	// 流式上传，避免把成片整体读入内存。
+	// 阶段五：保存成片。优先注册进对象存储（/api/files/:id/content 可访问）；
+	// 未配置对象存储时落到本地磁盘 <LOCAL_MEDIA_DIR>/<项目名>/，按项目分文件夹。
 	outputFile, err := os.Open(finalOutput)
 	if err != nil {
 		failRenderTask(&task, fmt.Errorf("成片读取失败：%w", err))
@@ -394,17 +401,23 @@ func executeRenderTask(taskID string) {
 		return
 	}
 	userCtx := WithUser(context.Background(), model.AuthUser{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, Role: user.Role})
-	uploaded, err := UploadStorageObjectStream(userCtx, "render-"+task.ID+".mp4", "video/mp4", outputFile, fileInfo.Size())
+	uploaded, uploadErr := UploadStorageObjectStream(userCtx, "render-"+task.ID+".mp4", "video/mp4", outputFile, fileInfo.Size())
 	outputFile.Close()
-	if err != nil {
-		failRenderTask(&task, fmt.Errorf("成片保存失败：%w", err))
-		return
+	if uploadErr == nil {
+		task.OutputFileID = uploaded.ID
+	} else {
+		log.Printf("render output object storage unavailable, save to local disk id=%s err=%v", task.ID, uploadErr)
+		savedPath, saveErr := saveRenderOutputLocally(finalOutput, spec.Folder)
+		if saveErr != nil {
+			failRenderTask(&task, fmt.Errorf("成片保存失败：%w", saveErr))
+			return
+		}
+		task.LocalPath = savedPath
 	}
 
 	current := now()
 	task.Status = "completed"
 	task.Progress = 100
-	task.OutputFileID = uploaded.ID
 	task.Seconds = strconv.FormatFloat(totalSeconds, 'f', 1, 64)
 	task.CompletedAt = current
 	task.UpdatedAt = current
@@ -415,10 +428,143 @@ func executeRenderTask(taskID string) {
 	}
 }
 
+// localMediaBaseDir 本地媒体根目录（默认 D:/InfiniteCanvas），成片与暂存素材都落到磁盘可见目录。
+func localMediaBaseDir() string {
+	dir := strings.TrimSpace(config.Cfg.LocalMediaDir)
+	if dir == "" {
+		dir = "D:/InfiniteCanvas"
+	}
+	return dir
+}
+
+// sanitizeFolderName 把项目名转成安全的文件夹名。
+func sanitizeFolderName(name string) string {
+	name = strings.TrimSpace(name)
+	re := regexp.MustCompile(`[\\/:*?"<>|]+`)
+	name = strings.TrimSpace(re.ReplaceAllString(name, "_"))
+	if name == "" {
+		name = "未命名项目"
+	}
+	if len(name) > 80 {
+		name = name[:80]
+	}
+	return name
+}
+
+// copyLocalFile 复制本地文件（渲染素材 file: 来源用）。
+func copyLocalFile(src string, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
+// StageLocalRenderMedia 把前端上传的本地媒体暂存到 <根目录>/<项目名>/media/，返回 file: 来源供渲染读取。
+func StageLocalRenderMedia(folder string, filename string, contentType string, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", errors.New("素材为空")
+	}
+	if int64(len(data)) > renderItemDownloadLimit {
+		return "", errors.New("素材过大")
+	}
+	dir := filepath.Join(localMediaBaseDir(), sanitizeFolderName(folder), "media")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == "" {
+		ext = renderExtForMimeType(contentType)
+	}
+	if ext == "" {
+		ext = ".bin"
+	}
+	target := filepath.Join(dir, uuid.NewString()+ext)
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		abs = target
+	}
+	return "file:" + abs, nil
+}
+
+// saveRenderOutputLocally 把成片保存到 <根目录>/<项目名>/ 下的本地文件，返回绝对路径。
+func saveRenderOutputLocally(finalOutput string, folder string) (string, error) {
+	dir := filepath.Join(localMediaBaseDir(), sanitizeFolderName(folder))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	name := fmt.Sprintf("%s-%s.mp4", sanitizeFolderName(folder), time.Now().Format("20060102-150405"))
+	target := filepath.Join(dir, name)
+	src, err := os.Open(finalOutput)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	dst, err := os.Create(target)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		return "", err
+	}
+	if err := dst.Close(); err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		abs = target
+	}
+	return abs, nil
+}
+
+// RenderOutputLocalPath 返回成片在本机的保存路径（本地保存模式），供流式下发。
+func RenderOutputLocalPath(taskID string) (string, error) {
+	task, found, err := repository.GetRenderTask(strings.TrimSpace(taskID))
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", errors.New("渲染任务不存在")
+	}
+	if strings.TrimSpace(task.LocalPath) == "" {
+		return "", errors.New("该成片没有本地文件")
+	}
+	return task.LocalPath, nil
+}
+
 // downloadRenderItem 流式下载素材到临时目录：存储对象走 storage 服务，http(s) 外链先过 SSRF 校验。
 func downloadRenderItem(ctx context.Context, source string, jobDir string, index int) (string, error) {
 	if err := os.MkdirAll(jobDir, 0755); err != nil {
 		return "", err
+	}
+	if strings.HasPrefix(source, "file:") {
+		src := strings.TrimSpace(strings.TrimPrefix(source, "file:"))
+		if src == "" {
+			return "", errors.New("本地素材路径无效")
+		}
+		info, err := os.Stat(src)
+		if err != nil || info.IsDir() {
+			return "", errors.New("本地素材不存在")
+		}
+		if info.Size() > renderItemDownloadLimit {
+			return "", errors.New("本地素材过大")
+		}
+		dest := filepath.Join(jobDir, fmt.Sprintf("item-%03d%s", index, renderExtFromPath(src)))
+		if err := copyLocalFile(src, dest); err != nil {
+			return "", err
+		}
+		return dest, nil
 	}
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
 		parsed, err := url.Parse(source)

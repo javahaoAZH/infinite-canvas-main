@@ -6,7 +6,8 @@ import { dataUrlToFile } from "@/lib/image-utils";
 import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
 import { isMimoChannel, mimoModels } from "@/lib/mimo-tts";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, normalizeGeminiBaseUrl } from "@/lib/gemini";
-import { imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
+import { imageToDataUrl, resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { downloadRemoteMediaWithAuth, mediaBearerForUrl } from "@/services/file-storage";
 import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceImage } from "@/types/image";
@@ -1015,9 +1016,30 @@ async function requestImages(config: AiConfig & { seedIndex?: number; seedCount?
     return references.length ? requestImageEditSingle(config, prompt, references, params) : requestImageGenerationSingle(config, prompt, params);
 }
 
+// 本地渠道（算力服务器等）出图产物落本地：受保护远端 URL 的出图结果经鉴权代理下载为 blob 后走既有持久化（uploadImage），
+// 失败静默回退原结果；语义与视频侧 cacheRemotePipelineVideo 一致
+async function cacheRemotePipelineImages(config: AiConfig, images: GeneratedImage[]): Promise<GeneratedImage[]> {
+    if (config.channelMode === "remote") return images; // 云端托管渠道自管 CDN，不重复缓存
+    return Promise.all(
+        images.map(async (image) => {
+            if (!/^https?:\/\//.test(image.dataUrl)) return image;
+            const bearer = mediaBearerForUrl(config, image.dataUrl);
+            if (!bearer) return image;
+            try {
+                const blob = await downloadRemoteMediaWithAuth(image.dataUrl, bearer);
+                if (!blob.type.startsWith("image/")) return image;
+                const uploaded = await uploadImage(blob);
+                return { ...image, dataUrl: uploaded.url };
+            } catch {
+                return image; // 下载失败时保留远端 URL，不阻塞主流程
+            }
+        }),
+    );
+}
+
 export async function requestGeneration(config: AiConfig & { seedIndex?: number; seedCount?: number }, prompt: string) {
     try {
-        const images = await requestImages(config, prompt, []);
+        const images = await cacheRemotePipelineImages(config, await requestImages(config, prompt, []));
         refreshRemoteUser(config);
         return images;
     } catch (error) {
@@ -1028,7 +1050,7 @@ export async function requestGeneration(config: AiConfig & { seedIndex?: number;
 
 export async function requestEdit(config: AiConfig & { seedIndex?: number; seedCount?: number }, prompt: string, references: ReferenceImage[]) {
     try {
-        const images = await requestImages(config, prompt, references);
+        const images = await cacheRemotePipelineImages(config, await requestImages(config, prompt, references));
         refreshRemoteUser(config);
         return images;
     } catch (error) {
