@@ -19,7 +19,7 @@ import {
     type DramaCharacter,
     type DramaMedia,
 } from "@/stores/use-drama-store";
-import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
+import { normalizeLocalChannels, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { callTextModel } from "./drama-review";
 
@@ -29,6 +29,30 @@ function findProject(projectId: string) {
 
 function assertImageChannel(config: AiConfig) {
     if (!useConfigStore.getState().isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的图片模型渠道");
+}
+
+// noobai 系列工作流为纯文生图（服务端无 LoadImage 节点），命中时不能携带参考图走图生图
+function isNoobaiTxt2ImgModel(model: string) {
+    return model.startsWith("noobai");
+}
+
+// 汇总渠道与全局模型列表：优先本地渠道 models，其次 config.models
+function channelModelPool(config: AiConfig): string[] {
+    return [...normalizeLocalChannels(config).flatMap((channel) => channel.models), ...(config.models || [])];
+}
+
+// 立绘/无参考分镜的纯文生图模型挑选：优先 noobai-xl-lora，其次 noobai-xl-vpred，均无则回退当前图片模型
+function pickAnimeTxt2ImgModel(config: AiConfig): string {
+    const pool = channelModelPool(config);
+    if (pool.includes("noobai-xl-lora")) return "noobai-xl-lora";
+    if (pool.includes("noobai-xl-vpred")) return "noobai-xl-vpred";
+    return config.imageModel;
+}
+
+// 带参考分镜的模型挑选：当前图片模型命中 noobai 系（不支持图生图）时改用渠道里的 qwen-image-edit，没有则保持原值
+function pickReferenceEditModel(config: AiConfig): string {
+    if (!isNoobaiTxt2ImgModel(config.imageModel || config.model)) return config.imageModel;
+    return channelModelPool(config).includes("qwen-image-edit") ? "qwen-image-edit" : config.imageModel;
 }
 
 // 剧本结构化：文本模型结构化出分镜与角色，并清空三张媒体表（与手动步骤行为一致）
@@ -142,7 +166,8 @@ export async function generateCharacterCandidates(projectId: string, characterId
         if (!character) return [];
         const description = character.description.trim();
         if (!description) throw new Error(`请先填写「${character.name || "角色"}」的角色描述`);
-        const config = dramaImageConfig(effectiveConfig);
+        // 立绘是纯文生图：浅拷贝覆盖 imageModel 优先走 noobai 系工作流（dramaImageConfig 会同步 model 字段）
+        const config = dramaImageConfig({ ...effectiveConfig, imageModel: pickAnimeTxt2ImgModel(effectiveConfig) });
         assertImageChannel(config);
         const state = useDramaStore.getState();
         const prompt = buildCharacterImagePrompt(description, resolveArtStyleBase(state.artStyle, state.customArtStyle), resolveScenePreset(state.scene));
@@ -210,7 +235,11 @@ export async function generateShotImage(projectId: string, shotId: string, effec
         const matched = characters.filter((character) => character.name.trim() && shot.description.includes(character.name.trim())).slice(0, 3);
         const anchors = (matched.length ? matched : characters.slice(0, 2)).map((character) => `${character.name}：${character.description.slice(0, 60)}`);
         const prompt = buildShotImagePrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), classifyShotFrame(shot), resolveScenePreset(useDramaStore.getState().scene), anchors);
-        const images = references.length ? await requestEdit(config, prompt, references) : await requestGeneration(config, prompt);
+        // 分工：无参考纯文生图走 noobai 系；有参考图时 noobai 系工作流无 LoadImage 不支持图生图，强制改用 qwen-image-edit
+        const shotConfig = references.length
+            ? dramaImageConfig({ ...effectiveConfig, imageModel: pickReferenceEditModel(effectiveConfig) })
+            : dramaImageConfig({ ...effectiveConfig, imageModel: pickAnimeTxt2ImgModel(effectiveConfig) });
+        const images = references.length ? await requestEdit(shotConfig, prompt, references) : await requestGeneration(shotConfig, prompt);
         const image = images[0];
         if (!image) throw new Error("图片接口没有返回结果");
         const uploaded = await uploadImage(image.dataUrl);

@@ -667,6 +667,9 @@ function normalizeVideoSecondsForModel(model: string, value: string) {
     if (key.includes("omni-flash-ext")) return closestAllowedSeconds(seconds, [4, 6, 8, 10]);
     if (key.includes("wan2-5") || key.includes("wan2.5")) return closestAllowedSeconds(seconds, [5, 10]);
     if (key === "wan2-6") return closestAllowedSeconds(seconds, [5, 10, 15]);
+    // 本地算力流水线 wan22：5B 上限 8 秒、720P 14B 上限 5 秒，超限截断（服务端 sidecar 超限会直接报错）
+    if (key.includes("wan22-i2v-14b")) return String(Math.min(5, seconds));
+    if (key.includes("wan22")) return String(Math.min(8, seconds));
     return String(seconds);
 }
 
