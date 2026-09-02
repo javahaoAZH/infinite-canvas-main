@@ -6,11 +6,12 @@ import { persist } from "zustand/middleware";
 
 import { apiGet } from "@/services/api/request";
 import type { AdminPublicSettings } from "@/services/api/admin";
+import { COMFYUI_WORKFLOW_LIP_SYNC_VIDEO, COMFYUI_WORKFLOW_PRESET_IDS, COMFYUI_WORKFLOW_PROTOCOL } from "@/lib/model-channel";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type LocalModelChannel = {
     id: string;
-    protocol: "openai" | "gemini" | "grok2api" | "metaso" | "apimart" | "kie" | "mimo" | "dashscope";
+    protocol: "openai" | "gemini" | "grok2api" | "metaso" | "apimart" | "kie" | "mimo" | "dashscope" | "comfyui";
     name: string;
     baseUrl: string;
     apiKey: string;
@@ -230,6 +231,8 @@ function preferredModel(models: string[], predicate: (model: string) => boolean)
 
 function isVideoModelName(model: string) {
     const value = model.toLowerCase();
+    // autodl ComfyUI 工作流：模型名即 workflow_id；对口型工作流名含 audio，优先归视频避免落入音频模型
+    if (value.includes("image_audio_to_video") || value.includes("lightx2v")) return true;
     // 万相视频系列令牌；含 "-image"（且不是 image-to-video 变体）的归为图像模型；视频变体由 i2v 命中，不含宽泛系列令牌以免误判文生图模型
     const wanVideo = ["wan2-5", "wan2.5", "wan2-6", "wan2.6", "wan2-7", "wan2.7", "wan/2-5", "wan/2-6", "wan/2-7"].some((token) => value.includes(token)) || value.includes("i2v");
     if (wanVideo && /-image(?!-to-video)/.test(value)) return false;
@@ -306,7 +309,7 @@ function isImageModelName(model: string) {
 
 function isAudioModelName(model: string) {
     const value = model.toLowerCase();
-    return value.includes("audio") || value.includes("tts") || value.includes("speech") || value.includes("voice") || value.includes("music") || value.includes("sound") || value.includes("elevenlabs") || value.includes("suno") || value.includes("lyrics") || value.includes("vocal") || value.includes("midi") || value.includes("wav");
+    return !isVideoModelName(model) && (value.includes("audio") || value.includes("tts") || value.includes("speech") || value.includes("voice") || value.includes("music") || value.includes("sound") || value.includes("elevenlabs") || value.includes("suno") || value.includes("lyrics") || value.includes("vocal") || value.includes("midi") || value.includes("wav"));
 }
 
 function isTextModelName(model: string) {
@@ -315,6 +318,8 @@ function isTextModelName(model: string) {
 
 export function modelMatchesCapability(model: string, capability?: ModelCapability, protocol = "") {
     if (!capability) return true;
+    // 对口型工作流由漫剧对白分流固定使用，不进通用模型下拉，避免手动来回切换
+    if (protocol === COMFYUI_WORKFLOW_PROTOCOL && model === COMFYUI_WORKFLOW_LIP_SYNC_VIDEO) return false;
     if (protocol === "gemini") {
         const value = model.toLowerCase();
         const video = /^models\/veo-|^veo-/.test(value);
@@ -389,6 +394,10 @@ export const useConfigStore = create<ConfigStore>()(
                 const config = { ...defaultConfig, ...persistedConfig };
                 const localChannels = normalizeLocalChannels(config);
                 const localModels = normalizeModelList(localChannels.flatMap((channel) => channel.models));
+                const imageModels = filterChannelModelsByCapability(localChannels, "image");
+                const videoModels = filterChannelModelsByCapability(localChannels, "video");
+                const textModels = filterChannelModelsByCapability(localChannels, "text");
+                const audioModels = filterChannelModelsByCapability(localChannels, "audio");
                 return {
                     ...current,
                     config: {
@@ -405,10 +414,10 @@ export const useConfigStore = create<ConfigStore>()(
                         syncStorageConfig: config.syncStorageConfig === true,
                         syncWebDAVStorageConfig: config.syncWebDAVStorageConfig === true,
                         channelMode: config.channelMode || "remote",
-                        imageModel: config.imageModel || config.model,
-                        videoModel: config.videoModel || "grok-imagine-video",
-                        textModel: config.textModel || config.model,
-                        audioModel: config.audioModel || defaultConfig.audioModel,
+                        imageModel: imageModels.includes(config.imageModel) ? config.imageModel : imageModels[0] || "",
+                        videoModel: videoModels.includes(config.videoModel) ? config.videoModel : videoModels[0] || "",
+                        textModel: textModels.includes(config.textModel) ? config.textModel : textModels[0] || "",
+                        audioModel: audioModels.includes(config.audioModel) ? config.audioModel : audioModels[0] || "",
                         audioVoice: config.audioVoice || defaultConfig.audioVoice,
                         audioFormat: config.audioFormat || defaultConfig.audioFormat,
                         audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
@@ -435,10 +444,10 @@ export const useConfigStore = create<ConfigStore>()(
                         videoCharacterOrientation: config.videoCharacterOrientation === "image" ? "image" : "video",
                         canvasImageCount: config.canvasImageCount || "1",
                         agentMaxSteps: normalizeAgentMaxSteps(config.agentMaxSteps),
-                        imageModels: filterChannelModelsByCapability(localChannels, "image"),
-                        videoModels: filterChannelModelsByCapability(localChannels, "video"),
-                        textModels: filterChannelModelsByCapability(localChannels, "text"),
-                        audioModels: filterChannelModelsByCapability(localChannels, "audio"),
+                        imageModels,
+                        videoModels,
+                        textModels,
+                        audioModels,
                     },
                 };
             },
@@ -505,18 +514,28 @@ function normalizeVersionedBaseUrl(baseUrl: string) {
 
 export function normalizeLocalChannels(config: Partial<AiConfig>): LocalModelChannel[] {
     const channels = Array.isArray(config.localChannels) ? config.localChannels : [];
-    const normalized: LocalModelChannel[] = channels.map((channel, index) => ({
-        id: channel.id || `local-${index + 1}`,
-        protocol: channel.protocol || "openai",
-        name: typeof channel.name === "string" ? channel.name : `本地渠道 ${index + 1}`,
-        baseUrl: channel.baseUrl || "",
-        apiKey: channel.apiKey || "",
-        models: Array.isArray(channel.models) ? channel.models.filter(Boolean) : [],
-    }));
+    const normalized: LocalModelChannel[] = channels.map((channel, index) => {
+        const protocol = channel.protocol || "openai";
+        return {
+            id: channel.id || `local-${index + 1}`,
+            protocol,
+            name: typeof channel.name === "string" ? channel.name : `本地渠道 ${index + 1}`,
+            baseUrl: channel.baseUrl || "",
+            apiKey: channel.apiKey || "",
+            models: normalizeChannelModels(protocol, Array.isArray(channel.models) ? channel.models.filter(Boolean) : []),
+        };
+    });
     if (!normalized.length) {
         normalized.push({ id: "local-default", protocol: "openai", name: "本地直连", baseUrl: config.baseUrl || defaultConfig.baseUrl, apiKey: config.apiKey || "", models: Array.isArray(config.models) ? config.models.filter(Boolean) : [] });
     }
     return normalized;
+}
+
+// ComfyUI 工作流模型名即 autodl 工作流 ID：只保留标准预设中的有效 ID，无有效 ID 时登记标准三件套，避免无效模型名提交请求
+function normalizeChannelModels(protocol: LocalModelChannel["protocol"], models: string[]) {
+    if (protocol !== COMFYUI_WORKFLOW_PROTOCOL) return models;
+    const valid = COMFYUI_WORKFLOW_PRESET_IDS.filter((id) => models.includes(id));
+    return valid.length ? valid : [...COMFYUI_WORKFLOW_PRESET_IDS];
 }
 
 export function channelIdForActiveModel(config: AiConfig) {

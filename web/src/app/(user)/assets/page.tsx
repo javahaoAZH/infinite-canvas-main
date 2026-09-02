@@ -1,8 +1,9 @@
 "use client";
 
 import { Copy, Download, PencilLine, Search, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Card, Drawer, Empty, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState, Suspense } from "react";
+import { App, Button, Card, Drawer, Empty, Image, Input, Modal, Pagination, Segmented, Select, Space, Tag, Typography } from "antd";
 import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
@@ -10,6 +11,7 @@ import { formatBytes } from "@/lib/image-utils";
 import { cn } from "@/lib/utils";
 import { useAssetStore, getCharacterInfo, type Asset, type AssetKind, type CharacterAsset } from "@/stores/use-asset-store";
 import { CharacterCard, CharacterDetailDrawer } from "../asset-library/page";
+import { ProjectAssetsPanel } from "./components/project-assets-panel";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { AssetFormModal } from "@/components/assets/asset-form-modal";
 
@@ -23,6 +25,14 @@ const kindOptions = [
 ];
 
 export default function AssetsPage() {
+    return (
+        <Suspense fallback={null}>
+            <AssetsPageInner />
+        </Suspense>
+    );
+}
+
+function AssetsPageInner() {
     const { message } = App.useApp();
     const copyText = useCopyText();
     const assetInputRef = useRef<HTMLInputElement>(null);
@@ -38,6 +48,9 @@ export default function AssetsPage() {
     const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
     const [deletingAsset, setDeletingAsset] = useState<Asset | null>(null);
     const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
+    const searchParams = useSearchParams();
+    const [sourceTab, setSourceTab] = useState<"mine" | "project">(searchParams.get("tab") === "project" ? "project" : "mine");
+    const initialProject = searchParams.get("project") || "";
     const validAssets = useMemo(
         () => assets.filter((asset) => asset.kind === "text" || asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" || asset.kind === "character"),
         [assets],
@@ -121,6 +134,22 @@ export default function AssetsPage() {
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background text-stone-900 dark:text-stone-100">
             <main className="min-h-0 flex-1 overflow-y-auto bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] px-6 py-8 [background-size:16px_16px] dark:bg-[radial-gradient(rgba(245,245,244,.14)_1px,transparent_1px)]">
+                <div className="mx-auto mb-6 flex max-w-5xl justify-center">
+                    <Segmented
+                        value={sourceTab}
+                        options={[
+                            { label: "个人素材", value: "mine" },
+                            { label: "项目资产", value: "project" },
+                        ]}
+                        onChange={(value) => setSourceTab(value as "mine" | "project")}
+                    />
+                </div>
+                {sourceTab === "project" ? (
+                    <div className="pb-8">
+                        <ProjectAssetsPanel initialProject={initialProject} />
+                    </div>
+                ) : (
+                    <>
                 <div className="pb-8">
                     <div className="mx-auto max-w-5xl text-center">
                         <h1 className="text-4xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">我的素材</h1>
@@ -228,6 +257,8 @@ export default function AssetsPage() {
                         />
                     </div>
                 </div>
+                    </>
+                )}
             </main>
 
             <AssetFormModal open={isAssetOpen} asset={editingAsset} onClose={() => setIsAssetOpen(false)} />

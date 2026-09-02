@@ -1,0 +1,87 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "NoobAI-XL-Vpred-v1.0.safetensors"
+    }
+  },
+  "15": {
+    "class_type": "LoraLoader",
+    "_meta": { "title": "LoRA" },
+    "inputs": {
+      "lora_name": "Cjuris114514__long_hair-noobai-v3-lora__long_hair_noobai-v3.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8,
+      "model": ["1", 0],
+      "clip": ["1", 1]
+    }
+  },
+  "2": {
+    "class_type": "ModelSamplingDiscrete",
+    "inputs": {
+      "sampling": "v_prediction",
+      "zsnr": true,
+      "model": ["15", 0]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Positive" },
+    "inputs": {
+      "text": "masterpiece, best quality, 1girl, long flowing hair, night city background, warm lights, detailed anime illustration",
+      "clip": ["15", 1]
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Negative" },
+    "inputs": {
+      "text": "lowres, bad anatomy, bad hands, extra digits, blurry, watermark, username, worst quality, low quality",
+      "clip": ["15", 1]
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "6": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 21,
+      "control_after_generate": "randomize",
+      "steps": 26,
+      "cfg": 6.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": ["2", 0],
+      "positive": ["3", 0],
+      "negative": ["4", 0],
+      "latent_image": ["5", 0]
+    }
+  },
+  "20": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "sdxl.vae.safetensors"
+    }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["6", 0],
+      "vae": ["20", 0]
+    }
+  },
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["7", 0],
+      "filename_prefix": "c2a_noobai_lora"
+    }
+  }
+}

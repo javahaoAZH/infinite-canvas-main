@@ -3,6 +3,7 @@ import axios from "axios";
 import { assertDashScopeProxyAvailable, compressImageToJpegDataUrl, createDashScopeVideoBody, DASHSCOPE_VIDEO_MAX_WAIT_MS, DASHSCOPE_VIDEO_POLL_INTERVAL_MS, isDashScopeConfig } from "@/lib/dashscope";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { isMiniMaxH3Config, normalizeMiniMaxH3Duration, normalizeMiniMaxH3Ratio, normalizeMiniMaxH3Resolution } from "@/lib/minimax-video";
+import { comfyUIHeaders, comfyUIPollUrl, comfyUISubmitUrl, assertComfyUIResponseOk, createComfyUILipSyncVideoBody, createComfyUIMultiRefVideoBody, isComfyUIWorkflowConfig, parseComfyUITaskStatus } from "@/lib/comfyui-workflow";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, geminiOperationUrl, isGeminiConfig, isGeminiVideoModel } from "@/lib/gemini";
 import { isGeminiVeo31Model, normalizeGeminiVideoDuration, normalizeGeminiVideoRatio, normalizeGeminiVideoResolution } from "@/lib/gemini-video";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio } from "@/lib/seedance-video";
@@ -35,6 +36,8 @@ export class VideoRequestError extends Error {
 }
 
 function usesAccountProxy(config: AiConfig) {
+    // ComfyUI 工作流后端无对应转发，一律浏览器直连 autodl（裸令牌）
+    if (isComfyUIWorkflowConfig(config, config.model || config.videoModel)) return false;
     const token = useUserStore.getState().token;
     return config.channelMode === "remote" || (config.channelMode === "local" && Boolean(token));
 }
@@ -47,6 +50,9 @@ function aiApiUrl(config: AiConfig, path: string) {
 }
 
 function aiVideoPollUrl(config: AiConfig, model: string, id: string) {
+    if (!usesAccountProxy(config) && isComfyUIWorkflowConfig(config, model)) {
+        return comfyUIPollUrl(config, model, id);
+    }
     if (!usesAccountProxy(config) && isGeminiConfig(config, model)) {
         const channel = localChannelForActiveModel(config);
         return geminiOperationUrl(channel?.baseUrl || config.baseUrl, id);
@@ -83,6 +89,7 @@ function aiHeaders(config: AiConfig) {
     if (isDashScopeConfig(config) && !usesAccountProxy(config)) assertDashScopeProxyAvailable(config);
     if (config.channelMode === "remote" && !token) throw new Error("请先登录后再使用云端渠道");
     if (config.channelMode === "remote") return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };
+    if (isComfyUIWorkflowConfig(config, config.model || config.videoModel)) return comfyUIHeaders(config, config.model || config.videoModel);
     if (token) return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-User-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };
     if (isGeminiConfig(config)) return geminiDirectHeaders(config);
     return { Authorization: `Bearer ${localChannelForActiveModel(config)?.apiKey || config.apiKey}` };
@@ -121,7 +128,9 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
         const channel = localChannelForActiveModel(config);
         const createUrl = !accountProxy && isGeminiConfig(config, model)
             ? geminiActionUrl(channel?.baseUrl || config.baseUrl, model, "predictLongRunning")
-            : !accountProxy && isMiniMaxH3Config(config, model)
+            : !accountProxy && isComfyUIWorkflowConfig(config, model)
+                ? comfyUISubmitUrl(config, model)
+                : !accountProxy && isMiniMaxH3Config(config, model)
                 ? miniMaxApiUrl(config, "/v2/video_generation")
                 : aiApiUrl(config, !accountProxy && (isGrok2APIVideoConfig(config, model) || isCogVideoX3Model(model)) ? "/videos/generations" : "/videos");
         const requestBody = !accountProxy && isGeminiConfig(config, model) ? withoutVideoModel(body) : body;
@@ -158,7 +167,7 @@ export async function pollCreatedVideoGenerationTask(config: AiConfig, task: Vid
         if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
         for (; ;) {
             if (dashscope && Date.now() > startedAt + DASHSCOPE_VIDEO_MAX_WAIT_MS) throw new VideoRequestError("百炼视频生成超时（20 分钟），请稍后在任务列表中查看结果", task);
-            const video = await cacheRemotePipelineVideo(config, await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce())));
+            const video = await cacheRemotePipelineVideo(config, await cacheProtectedComfyUIVideo(config, model, await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce()))));
             onPoll?.(video);
             if (isFailedVideoStatus(video.status)) throw new VideoRequestError(readableVideoErrorMessage(video.error?.message), video);
             if (typeof video.progress === "number") onProgress?.(video.progress, video);
@@ -189,7 +198,7 @@ export async function pollVideoGenerationTaskStatus(config: AiConfig, task: Vide
     const result = directProvider
         ? await (await import("@/services/api/direct-ai")).pollDirectVideoTask(config, directProvider, pollId)
         : unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config), params: usesAccountProxy(config) ? { model } : undefined })).data);
-    return cacheRemotePipelineVideo(config, await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result))));
+    return cacheRemotePipelineVideo(config, await cacheProtectedComfyUIVideo(config, model, await cacheProtectedDashScopeVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result)))));
 }
 
 export async function listVideoGenerationTasks(config: AiConfig) {
@@ -285,6 +294,7 @@ async function createAgnesVideoV25RequestBody(config: AiConfig, model: string, p
 
 async function createVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
     const size = normalizeVideoSize(config.size);
+    if (isComfyUIWorkflowConfig(config, model)) return createComfyUIWorkflowVideoRequestBody(config, model, prompt, input);
     if (isDashScopeConfig(config, model)) return createDashScopeVideoRequestBody(config, model, prompt, input);
     if (isGeminiVideoModel(model) && isGeminiConfig(config, model)) return createGeminiVeoRequestBody(config, model, prompt, input);
     if (isGrok2APIVideoConfig(config, model)) return createGrok2APIVideoRequestBody(config, model, prompt, input);
@@ -371,6 +381,41 @@ async function createVideoRequestBody(config: AiConfig, model: string, prompt: s
     const audioFiles = kling ? [] : await Promise.all(input.audioReferences.map(mediaReferenceToFormValue));
     audioFiles.forEach((file) => body.append("audio_reference[]", file));
     return body;
+}
+
+// ComfyUI 工作流视频：对口型工作流用图+音频驱动（无提示词），其余走多图参考（首帧+参考图+提示词）
+async function createComfyUIWorkflowVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
+    const frame = input.firstFrame || input.references[0] || null;
+    if (model.toLowerCase().includes("image_audio_to_video")) {
+        if (!frame) throw new VideoRequestError("对口型工作流必须提供分镜图作首帧");
+        const audio = input.audioReferences[0];
+        if (!audio) throw new VideoRequestError("对口型工作流必须提供配音音频（请先生成该分镜配音）");
+        return createComfyUILipSyncVideoBody(config, frame, audio);
+    }
+    const references = input.firstFrame ? input.references : input.references.slice(1);
+    return createComfyUIMultiRefVideoBody(config, prompt, frame, references);
+}
+
+// ComfyUI 工作流响应：提交返回 data.task_id，轮询返回 data.status/results[]；外层 code 为字符串 "Success"
+function normalizeComfyUIWorkflowVideoResponse(payload: ApiVideoResponse): VideoResponse {
+    assertComfyUIResponseOk(payload);
+    const parsed = parseComfyUITaskStatus(payload);
+    if (parsed.status === "failed") throw new VideoRequestError(parsed.message || "ComfyUI 工作流任务执行失败", payload);
+    return normalizeVideoResponse({
+        id: parsed.taskId,
+        task_id: parsed.taskId,
+        status: parsed.status === "completed" ? "completed" : "processing",
+        progress: parsed.status === "completed" ? 100 : 0,
+        video_url: parsed.url,
+    });
+}
+
+// ComfyUI 产物 URL 有效期短：完成后立即下载到本地/对象存储，避免过期失效；语义同百炼的 cacheProtected 系列。注意此函数在提交响应（无 url）时也会过一遍，靠 url 判断短路。
+async function cacheProtectedComfyUIVideo(config: AiConfig, model: string, task: VideoResponse) {
+    const url = task.video_url || task.url || "";
+    if (!isComfyUIWorkflowConfig(config, model) || !isCompletedVideoStatus(task.status) || task.storageKey || !/^https?:\/\//.test(url)) return task;
+    const media = await uploadMediaFile(await downloadRemoteMedia(url), "generated-video");
+    return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey };
 }
 
 async function createMiniMaxH3VideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
@@ -710,6 +755,7 @@ function unwrapVideoResponse(payload: ApiVideoResponse): VideoResponse {
 }
 
 function unwrapVideoResponseForConfig(config: AiConfig, model: string, payload: ApiVideoResponse) {
+    if (isComfyUIWorkflowConfig(config, model)) return normalizeComfyUIWorkflowVideoResponse(payload);
     if (isGeminiVideoModel(model) && isGeminiConfig(config, model)) return normalizeGeminiVideoResponse(payload);
     if (isDashScopeConfig(config, model)) return normalizeDashScopeVideoResponse(payload);
     if (isMiniMaxH3Config(config, model)) {

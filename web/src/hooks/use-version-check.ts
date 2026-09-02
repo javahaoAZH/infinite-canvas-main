@@ -3,8 +3,9 @@ import { App } from "antd";
 import { APP_VERSION } from "@/constant/env";
 import { parseChangelog, type ReleaseInfo } from "@/lib/release";
 
-const latestVersionUrl = "https://raw.githubusercontent.com/tigerowo/infinite-canvas/main/VERSION";
-const latestChangelogUrl = "https://raw.githubusercontent.com/tigerowo/infinite-canvas/main/CHANGELOG.md";
+// 二开仓库自检：版本与更新日志均取我们自己的 GitHub 仓库（默认分支 master），不再读上游 tigerowo/infinite-canvas
+const latestVersionUrl = "https://raw.githubusercontent.com/javahaoAZH/infinite-canvas-main/master/VERSION";
+const latestChangelogUrl = "https://raw.githubusercontent.com/javahaoAZH/infinite-canvas-main/master/CHANGELOG.md";
 
 function readLocalReleases(): ReleaseInfo[] {
     try {
@@ -26,11 +27,17 @@ function isNewerVersion(latestVersion: string, currentVersion: string) {
     return latest.some((value, index) => value > current[index] && latest.slice(0, index).every((part, prevIndex) => part === current[prevIndex]));
 }
 
+// 构建内置版本信息（next.config 注入我们仓库的 CHANGELOG/VERSION）中的最新已发布版本，私有仓库/离线时作为事实源
+function localLatestVersion(releases: ReleaseInfo[], fallback: string) {
+    const first = releases.find((release) => release.version !== "Unreleased" && /^v?\d/.test(release.version));
+    return first?.version || fallback;
+}
+
 export function useVersionCheck() {
     const currentVersion = APP_VERSION;
     const { message } = App.useApp();
     const localReleases = useMemo(readLocalReleases, []);
-    const [latestVersion, setLatestVersion] = useState(currentVersion);
+    const [latestVersion, setLatestVersion] = useState(() => localLatestVersion(localReleases, currentVersion));
     const [releases, setReleases] = useState<ReleaseInfo[]>(localReleases);
     const [checking, setChecking] = useState(false);
     const [open, setOpen] = useState(false);
@@ -39,14 +46,16 @@ export function useVersionCheck() {
     const checkLatestVersion = useCallback(async () => {
         try {
             const response = await fetch(latestVersionUrl);
-            if (!response.ok) return false;
+            if (!response.ok) throw new Error("版本读取失败");
             const version = await response.text();
             setLatestVersion(version.trim() || currentVersion);
             return true;
         } catch {
+            // 私有仓库/离线：回退构建内置版本信息，不报错
+            setLatestVersion(localLatestVersion(localReleases, currentVersion));
             return false;
         }
-    }, [currentVersion]);
+    }, [currentVersion, localReleases]);
 
     const checkLatestRelease = useCallback(
         async (showMessage = false) => {
@@ -61,9 +70,12 @@ export function useVersionCheck() {
                 if (showMessage) message.success("已获取最新版本信息");
                 return true;
             } catch {
-                setLatestVersion(currentVersion);
+                setLatestVersion(localLatestVersion(localReleases, currentVersion));
                 setReleases(localReleases);
-                if (showMessage) message.error("获取最新版本信息失败");
+                if (showMessage) {
+                    if (localReleases.length) message.info("仓库私有或离线：已展示本构建内置的我们仓库版本信息");
+                    else message.error("获取最新版本信息失败");
+                }
                 return false;
             } finally {
                 setChecking(false);

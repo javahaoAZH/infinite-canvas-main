@@ -40,12 +40,17 @@ export function buildDirectorPlan(project: DramaProject, options: DirectorPlanOp
         const label = `分镜 ${index + 1}`;
         const imageTask = newTask("shotImage", shot.id, `${label} · 分镜图`, [...scriptDeps, ...characterTaskIds], false, project.shotImages[shot.id] ? "success" : "pending");
         tasks.push(imageTask);
-        // 视频硬依赖本镜分镜图：分镜图被跳过时连带跳过
-        tasks.push(newTask("shotVideo", shot.id, `${label} · 视频`, [imageTask.id], true, project.shotVideos[shot.id] ? "success" : "pending"));
-        if (options.includeAudio) {
-            if (shot.dialogue.trim()) tasks.push(newTask("audio", shot.id, `${label} · 对白`, [...scriptDeps], false, project.shotAudios[shot.id] ? "success" : "pending"));
-            if ((shot.narration || "").trim()) tasks.push(newTask("audio", `${shot.id}:narration`, `${label} · 旁白`, [...scriptDeps], false, project.shotAudios[`${shot.id}:narration`] ? "success" : "pending"));
+        // 对白配音先于视频创建：对白镜视频要回喂配音走对口型工作流（A2）
+        let dialogueAudioTask: DirectorTask | undefined;
+        if (options.includeAudio && shot.dialogue.trim()) {
+            dialogueAudioTask = newTask("audio", shot.id, `${label} · 对白`, [...scriptDeps], false, project.shotAudios[shot.id] ? "success" : "pending");
+            tasks.push(dialogueAudioTask);
         }
+        // 视频硬依赖本镜分镜图：分镜图被跳过时连带跳过；对白配音只作弱依赖，配音失败/跳过时降级走多图参考路径（A2）
+        const videoTask = newTask("shotVideo", shot.id, `${label} · 视频`, [imageTask.id], true, project.shotVideos[shot.id] ? "success" : "pending");
+        if (dialogueAudioTask) videoTask.softDeps = [dialogueAudioTask.id];
+        tasks.push(videoTask);
+        if (options.includeAudio && (shot.narration || "").trim()) tasks.push(newTask("audio", `${shot.id}:narration`, `${label} · 旁白`, [...scriptDeps], false, project.shotAudios[`${shot.id}:narration`] ? "success" : "pending"));
     });
     return {
         id: nanoid(),
@@ -81,6 +86,11 @@ export function expandDirectorTasks(plan: DirectorPlan, project: DramaProject): 
         added.push({
             ...task,
             deps: task.deps.map((depId) => {
+                const dep = freshById.get(depId);
+                const existingDep = dep ? existingByKey.get(taskKey(dep)) : undefined;
+                return existingDep?.id || depId;
+            }),
+            softDeps: (task.softDeps || []).map((depId) => {
                 const dep = freshById.get(depId);
                 const existingDep = dep ? existingByKey.get(taskKey(dep)) : undefined;
                 return existingDep?.id || depId;

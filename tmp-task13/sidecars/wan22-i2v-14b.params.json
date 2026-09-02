@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "kind": "img2video",
+  "prompt_node": "7.text",
+  "negative_prompt_node": "8.text",
+  "image_node": "5.image",
+  "parameters": {
+    "size": {
+      "type": "size",
+      "default": "1280x720",
+      "description": "Video frame size as WIDTHxHEIGHT.",
+      "maps": [
+        { "ref": "10.width", "part": "width" },
+        { "ref": "10.height", "part": "height" }
+      ]
+    },
+    "duration": {
+      "type": "float",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 5,
+      "description": "Video duration in seconds; converted to latent length via fps (length = seconds * fps, 720P 14B caps at 5s / 120 frames).",
+      "maps": [
+        { "ref": "10.length", "transform": "seconds_to_frames", "fps_param": "fps", "round": "int" }
+      ]
+    },
+    "seed": {
+      "type": "int",
+      "description": "Random seed applied to both noise experts.",
+      "maps": [
+        { "ref": "11.noise_seed" },
+        { "ref": "12.noise_seed" }
+      ]
+    },
+    "steps": {
+      "type": "int",
+      "default": 28,
+      "minimum": 2,
+      "maximum": 60,
+      "description": "Total sampler steps, split half/half between experts.",
+      "maps": [
+        { "ref": "11.steps" },
+        { "ref": "12.steps" }
+      ]
+    },
+    "cfg": {
+      "type": "float",
+      "default": 4.0,
+      "minimum": 1.0,
+      "maximum": 12.0,
+      "maps": [
+        { "ref": "11.cfg" },
+        { "ref": "12.cfg" }
+      ]
+    },
+    "fps": {
+      "type": "int",
+      "default": 24,
+      "minimum": 1,
+      "maximum": 60,
+      "maps": [
+        { "ref": "14.frame_rate" }
+      ]
+    }
+  }
+}

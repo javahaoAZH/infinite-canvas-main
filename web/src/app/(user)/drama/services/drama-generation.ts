@@ -2,11 +2,12 @@ import { nanoid } from "nanoid";
 
 import { buildCharacterImagePrompt, buildScriptSystemPrompt, buildShotImagePrompt, buildShotVideoPrompt, classifyShotFrame, resolveArtStyleBase, resolveScenePreset } from "@/app/(user)/drama/prompts";
 import { parseStructuredScript, type StructuredCharacter } from "@/app/(user)/drama/services/drama-review";
+import { COMFYUI_WORKFLOW_LIP_SYNC_VIDEO, COMFYUI_WORKFLOW_MULTI_REF_VIDEO, isComfyUIWorkflowConfig } from "@/lib/comfyui-workflow";
 import { requestEdit, requestGeneration } from "@/services/api/image";
 import { requestVideoGeneration } from "@/services/api/video";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { createRenderTask, stageLocalRenderMedia, type RenderTaskResponse, type RenderTimelineSpec } from "@/services/api/render";
-import { getMediaBlob, resolveMediaUrl } from "@/services/file-storage";
+import { getMediaBlob, resolveMediaUrl, uploadAssetMediaFile, type UploadedFile } from "@/services/file-storage";
 import { getImageBlob, uploadImage } from "@/services/image-storage";
 import {
     collectCharacterReferences,
@@ -21,6 +22,7 @@ import {
 } from "@/stores/use-drama-store";
 import { normalizeLocalChannels, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
+import type { ReferenceAudio } from "@/types/media";
 import { callTextModel } from "./drama-review";
 
 function findProject(projectId: string) {
@@ -82,7 +84,7 @@ export async function structureScript(projectId: string, effectiveConfig: AiConf
 export type StructuredScriptInput = {
     title?: string;
     characters?: Array<{ name?: string; description?: string }>;
-    shots: Array<{ description?: string; dialogue?: string; narration?: string; seconds?: number }>;
+    shots: Array<{ description?: string; dialogue?: string; narration?: string; seconds?: number; shotSize?: string; camera?: string; transition?: string }>;
 };
 
 export function applyStructuredScript(projectId: string, structured: StructuredScriptInput): { shotCount: number; characterCount: number } {
@@ -91,7 +93,16 @@ export function applyStructuredScript(projectId: string, structured: StructuredS
     if (!structured.shots.length) throw new Error("分镜列表不能为空");
     const characters = mergeCharacters(project.characters, structured.characters || []);
     const shots = structured.shots.map((shot) =>
-        newDramaShot({ description: (shot.description || "").trim(), dialogue: (shot.dialogue || "").trim(), narration: (shot.narration || "").trim(), seconds: clampShotSeconds(shot.seconds) }),
+        newDramaShot({
+            description: (shot.description || "").trim(),
+            dialogue: (shot.dialogue || "").trim(),
+            narration: (shot.narration || "").trim(),
+            seconds: clampShotSeconds(shot.seconds),
+            // 可选镜头语言字段（A4）：空串视为未指定，不写入存储
+            ...(shot.shotSize?.trim() ? { shotSize: shot.shotSize.trim() } : {}),
+            ...(shot.camera?.trim() ? { camera: shot.camera.trim() } : {}),
+            ...(shot.transition?.trim() ? { transition: shot.transition.trim() } : {}),
+        }),
     );
     useDramaStore.getState().updateProject(projectId, {
         shots,
@@ -106,7 +117,7 @@ export function applyStructuredScript(projectId: string, structured: StructuredS
 
 // 按分镜 id 部分更新（审查检测 → 修复 → 回写闭环用）：只覆盖传入字段，秒数钳 1-30；
 // 不动未提及分镜、不清空三张媒体表、保留已有媒体关联；id 不存在时报错列出无效 id
-export type DramaShotPatch = { id: string; description?: string; dialogue?: string; narration?: string; seconds?: number };
+export type DramaShotPatch = { id: string; description?: string; dialogue?: string; narration?: string; seconds?: number; shotSize?: string; camera?: string; transition?: string };
 
 export function updateDramaShots(projectId: string, patches: DramaShotPatch[]): { shotCount: number } {
     const project = findProject(projectId);
@@ -124,6 +135,9 @@ export function updateDramaShots(projectId: string, patches: DramaShotPatch[]): 
             ...(typeof patch.dialogue === "string" ? { dialogue: patch.dialogue } : {}),
             ...(typeof patch.narration === "string" ? { narration: patch.narration } : {}),
             ...(patch.seconds !== undefined ? { seconds: clampShotSeconds(patch.seconds) } : {}),
+            ...(typeof patch.shotSize === "string" ? { shotSize: patch.shotSize.trim() || undefined } : {}),
+            ...(typeof patch.camera === "string" ? { camera: patch.camera.trim() || undefined } : {}),
+            ...(typeof patch.transition === "string" ? { transition: patch.transition.trim() || undefined } : {}),
         };
     });
     useDramaStore.getState().updateProject(projectId, { shots });
@@ -234,7 +248,7 @@ export async function generateShotImage(projectId: string, shotId: string, effec
         const characters = projectCharacters.filter((character) => character.description.trim());
         const matched = characters.filter((character) => character.name.trim() && shot.description.includes(character.name.trim())).slice(0, 3);
         const anchors = (matched.length ? matched : characters.slice(0, 2)).map((character) => `${character.name}：${character.description.slice(0, 60)}`);
-        const prompt = buildShotImagePrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), classifyShotFrame(shot), resolveScenePreset(useDramaStore.getState().scene), anchors);
+        const prompt = buildShotImagePrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), classifyShotFrame(shot), resolveScenePreset(useDramaStore.getState().scene), anchors, shot);
         // 分工：无参考纯文生图走 noobai 系；有参考图时 noobai 系工作流无 LoadImage 不支持图生图，强制改用 qwen-image-edit
         const shotConfig = references.length
             ? dramaImageConfig({ ...effectiveConfig, imageModel: pickReferenceEditModel(effectiveConfig) })
@@ -275,10 +289,32 @@ export async function generateShotVideo(projectId: string, shotId: string, effec
         const config = dramaVideoConfig(effectiveConfig);
         if (!useConfigStore.getState().isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的视频模型渠道");
         const state = useDramaStore.getState();
-        const prompt = buildShotVideoPrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), shot.seconds, resolveScenePreset(useDramaStore.getState().scene));
+        const prompt = buildShotVideoPrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), shot.seconds, resolveScenePreset(useDramaStore.getState().scene), shot);
+        // 对白分流：ComfyUI 渠道且本镜对白配音已就绪 → 换对口型工作流（分镜图+音频驱动，无提示词）；其余保持多图参考路径（A2）
+        const dialogueAudio = current?.shotAudios[shotId];
+        if (dialogueAudio && isComfyUIWorkflowConfig(config, config.model)) {
+            const result = await requestVideoGeneration(
+                { ...config, model: COMFYUI_WORKFLOW_LIP_SYNC_VIDEO },
+                prompt,
+                { references: [toReferenceImage(shotImage, "分镜图")], audioReferences: [toReferenceAudio(dialogueAudio, "对白配音")] },
+                (progress) => onProgress?.(progress),
+            );
+            const latest = findProject(projectId);
+            useDramaStore.getState().updateProject(projectId, {
+                shotVideos: {
+                    ...(latest?.shotVideos || {}),
+                    [shotId]: { url: result.url, storageKey: result.task.storageKey, width: result.width, height: result.height, durationMs: result.durationMs, mimeType: result.mimeType || "video/mp4" },
+                },
+            });
+            archiveShotMediaToDisk(projectId, result.task.storageKey, `分镜视频-${shotNumber(projectId, shotId)}.${mediaExtension(result.mimeType || "video/mp4", "mp4")}`);
+            useDramaStore.getState().clearFailedMedia(busyKey);
+            return;
+        }
         // 参考数组：分镜图保持第一位作首帧，追加项目角色立绘参考保障人物一致性（A2）；本地算力流水线只会消费第一张（见 video.ts）
         const references = [toReferenceImage(shotImage, "分镜图"), ...collectCharacterReferences(findProject(projectId)?.characters || [])];
-        const result = await requestVideoGeneration(config, prompt, references, (progress) => onProgress?.(progress));
+        // ComfyUI 渠道非对白镜固定多图参考工作流（默认视频模型下拉已不含对口型工作流，双保险防误配）
+        const videoConfig = isComfyUIWorkflowConfig(config, config.model) ? { ...config, model: COMFYUI_WORKFLOW_MULTI_REF_VIDEO } : config;
+        const result = await requestVideoGeneration(videoConfig, prompt, references, (progress) => onProgress?.(progress));
         const latest = findProject(projectId);
         useDramaStore.getState().updateProject(projectId, {
             shotVideos: {
@@ -314,8 +350,9 @@ export async function generateVoiceAudio(projectId: string, audioKey: string, ef
         if (!text) throw new Error("该分镜没有可配音的对白或旁白");
         const config = dramaAudioConfig(effectiveConfig);
         if (!useConfigStore.getState().isAiConfigReady(config, config.model)) throw new Error("请先在设置中配置可用的音频模型渠道");
-        const blob = await requestAudioGeneration(config, text);
-        const stored = await storeGeneratedAudio(blob);
+        const blob = await requestAudioGeneration(config, text, resolveVoiceReference(findProject(projectId), shot, isNarration));
+        // ComfyUI 渠道（indextts2）产物需回喂对口型工作流，优先存服务端拿公网地址；其余渠道保持本地存储
+        const stored = isComfyUIWorkflowConfig(config, config.model) ? await storeDramaAudioPreferServer(blob) : await storeGeneratedAudio(blob);
         const current = findProject(projectId);
         useDramaStore.getState().updateProject(projectId, {
             shotAudios: { ...(current?.shotAudios || {}), [audioKey]: { url: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, mimeType: stored.mimeType, durationMs: stored.durationMs } },
@@ -332,7 +369,30 @@ export async function generateVoiceAudio(projectId: string, audioKey: string, ef
     }
 }
 
-// 按 storageKey 前缀读本地 blob：图片走 image-storage，其余（视频/音频）走 file-storage；取不到返回 null
+// 配音音色参考：旁白用项目级默认；对白优先描述中命中的角色自己的音色参考，其次首个有声色参考的角色，再回退旁白音色；都没有返回 undefined（非 comfyui TTS 不受影响）
+function resolveVoiceReference(project: ReturnType<typeof findProject>, shot: { dialogue: string }, isNarration: boolean): ReferenceAudio | undefined {
+    if (!project) return undefined;
+    if (isNarration) return project.narratorVoiceRef ? toReferenceAudio(project.narratorVoiceRef, "旁白音色") : undefined;
+    const matched = project.characters.find((character) => character.name.trim() && shot.dialogue.includes(character.name.trim()) && character.voiceRef);
+    const media = matched?.voiceRef || project.characters.find((character) => character.voiceRef)?.voiceRef || project.narratorVoiceRef;
+    return media ? toReferenceAudio(media, "音色参考") : undefined;
+}
+
+function toReferenceAudio(media: DramaMedia, name: string): ReferenceAudio {
+    return { id: nanoid(), name, type: media.mimeType || "audio/wav", url: media.url, storageKey: media.storageKey, durationMs: media.durationMs };
+}
+
+// 服务端存储可用时存服务端（对口型工作流的音频入参需公网地址），不可用或失败回退本地存储不阻塞主流程
+async function storeDramaAudioPreferServer(blob: Blob): Promise<UploadedFile> {
+    try {
+        const audio = blob.type.startsWith("audio/") ? blob : new Blob([blob], { type: "audio/wav" });
+        return await uploadAssetMediaFile(new File([audio], `drama-voice-${nanoid()}.wav`, { type: audio.type }), "drama-audio");
+    } catch {
+        return storeGeneratedAudio(blob);
+    }
+}
+
+// 按 storageKey 前缀读本地 blob（归档用）
 async function readLocalBlob(storageKey: string) {
     try {
         return storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);

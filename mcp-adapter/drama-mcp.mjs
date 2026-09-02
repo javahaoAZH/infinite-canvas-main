@@ -5,6 +5,8 @@
 // 协议：页面连上后首条消息必须是 {"type":"hello","token":"..."}；令牌匹配回 {"type":"ready"}，不匹配以 4401 关闭；
 //   工具调用 {"type":"call","id":"...","tool":"...","args":{...}} → {"type":"result","id":"...","ok":true,"data":{...} | "ok":false,"error":"中文错误"}，单次调用 120 秒超时。
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -101,7 +103,10 @@ function callPage(tool, args) {
 // 「AI 检测 → 修复 → 回写」闭环提示（写入 set_script / apply_shots 的工具描述）
 const LOOP_HINT = "推荐闭环：先 drama_get_skills 获取写法规范 → 产出内容 → drama_review_shots 检测 → 对不合格 findings 用 drama_update_shots 回写修复 → 复检通过后 drama_start_production。";
 
-// 14 个 MCP 工具：名称 / 入参 / 行为与页面侧 BRIDGE_TOOLS 处理器一一对应
+// 图片扩展名 → MIME（注入工具把本地文件转 base64 dataUrl 后交给页面）
+const IMAGE_MIME_BY_EXT = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" };
+
+// 15 个 MCP 工具：名称 / 入参 / 行为与页面侧 BRIDGE_TOOLS 处理器一一对应
 const TOOLS = {
     drama_list_projects: {
         description: "列出漫剧软件中的全部项目（按更新时间倒序）：id、标题、当前步骤（0-5 对应剧本/分镜/角色四视图/分镜图/图生视频/配音成片）、分镜数、角色数。",
@@ -145,6 +150,9 @@ const TOOLS = {
                         dialogue: z.string().optional().describe("对白，可为空字符串"),
                         narration: z.string().optional().describe("旁白（画外音），可为空字符串"),
                         seconds: z.number().int().min(1).max(30).optional().describe("本镜时长（秒）1-30，缺省 5"),
+                        shotSize: z.string().optional().describe("可选景别：远景/全景/中景/中近景/近景/特写（自由描述亦可，缺省不指定）"),
+                        camera: z.string().optional().describe("可选运镜：固定镜头/推镜头/拉镜头/横移/环绕/手持跟拍/升/降（自由描述亦可，缺省不指定）"),
+                        transition: z.string().optional().describe("可选转场：硬切/叠化/匹配剪辑/白闪/黑场（自由描述亦可，缺省不指定）"),
                     }),
                 )
                 .min(1)
@@ -171,6 +179,9 @@ const TOOLS = {
                         dialogue: z.string().optional().describe("新的对白"),
                         narration: z.string().optional().describe("新的旁白"),
                         seconds: z.number().int().min(1).max(30).optional().describe("新的时长（秒）"),
+                        shotSize: z.string().optional().describe("新的景别（空串清除）"),
+                        camera: z.string().optional().describe("新的运镜（空串清除）"),
+                        transition: z.string().optional().describe("新的转场（空串清除）"),
                     }),
                 )
                 .min(1)
@@ -215,6 +226,93 @@ const TOOLS = {
             taskId: z.string().min(1).describe("成片任务 id"),
         },
     },
+    drama_inject_image: {
+        description:
+            "把本地图片（Qoder ImageGen 产物）注入到漫剧项目：target=character 注入为角色立绘候选（characterId 必填，可用 characterName 按名匹配，autoAssignView 缺省 true 自动分配到首个空视图）；target=shotImage 注入为分镜图（shotId 必填，取自 drama_get_project）。推荐工作流：drama_apply_shots 写入分镜 → 逐角色/逐镜生成图片并注入 → drama_start_production 只补跑视频与配音（已有图片自动跳过）。",
+        schema: {
+            file: z.string().min(1).describe("本地图片绝对路径（png / jpg / jpeg / webp）"),
+            target: z.enum(["character", "shotImage"]).describe("注入目标：character=角色立绘候选，shotImage=分镜图"),
+            characterId: z.string().optional().describe("目标角色 id（target=character 时，与 characterName 二选一）"),
+            characterName: z.string().optional().describe("目标角色名（target=character 时，与 characterId 二选一，按名匹配）"),
+            shotId: z.string().optional().describe("目标分镜 id（target=shotImage 时必填，取自 drama_get_project）"),
+            autoAssignView: z.boolean().optional().describe("注入立绘后自动分配到首个空视图，缺省 true"),
+        },
+        handler: async (args) => {
+            const filePath = String(args.file || "");
+            if (!filePath) throw new Error("file 不能为空");
+            const mime = IMAGE_MIME_BY_EXT[extname(filePath).toLowerCase()];
+            if (!mime) throw new Error("仅支持图片文件：.png / .jpg / .jpeg / .webp");
+            let buffer;
+            try {
+                buffer = await readFile(filePath);
+            } catch {
+                throw new Error(`读取图片失败：${filePath}，请确认路径存在`);
+            }
+            return callPage("drama_inject_image", { ...args, dataUrl: `data:${mime};base64,${buffer.toString("base64")}` });
+        },
+    },
+    drama_asset_list: {
+        description:
+            "查询项目资产清单（D 盘项目文件夹 资产清单.json 为唯一事实源，三区分离：store 工作区/清单发布区/history 历史区）：可按分类（角色/场景/道具/生物/特效/图形）、状态（待产出/制作中/待审核/需修改/已确认/已归档）、优先级（P0-P3）过滤；返回条目含版本、审核记录、锁定段、依赖、用于。",
+        schema: {
+            project: z.string().optional().describe("项目名，缺省取活跃项目名"),
+            category: z.string().optional().describe("分类过滤"),
+            status: z.string().optional().describe("状态过滤"),
+            priority: z.string().optional().describe("优先级过滤"),
+        },
+    },
+    drama_asset_upsert: {
+        description:
+            "登记/更新清单条目（按编号合并，新条目自动编号）：分类（六类之一）与名称必填；优先级 P0-P3；依据（如 第2章·卡§9）；锁定段（角色卡生图提示词原文，一字不改）；规格；依赖（条目编号数组）；用于（集.镜数组，如 ep01.镜头3）。状态走六态机，不要直接跳已确认。",
+        schema: {
+            project: z.string().optional().describe("项目名，缺省取活跃项目名"),
+            entry: z.record(z.string(), z.any()).describe("条目对象（中文字段名：编号/分类/名称/规格/优先级/状态/依据/锁定段/依赖/用于）"),
+        },
+    },
+    drama_asset_bind: {
+        description:
+            "把本地产物绑定到清单条目成为新版本 vNNN（旧版文件自动移入 history/，条目状态→待审核）；files 为本地绝对路径（适配器转 base64 转发）；source 可选复跑参数 JSON 文本（提示词全文/尺寸/种子/渠道）。绑定后等人工审核：drama_asset_confirm 或资产页。",
+        schema: {
+            project: z.string().optional().describe("项目名，缺省取活跃项目名"),
+            id: z.string().min(1).describe("条目编号"),
+            files: z.array(z.string().min(1)).min(1).describe("产物本地绝对路径"),
+            note: z.string().optional().describe("版本备注"),
+            source: z.string().optional().describe("复跑参数 JSON 文本"),
+        },
+        handler: async (args) => {
+            const paths = Array.isArray(args.files) ? args.files.map(String) : [];
+            const payloads = [];
+            for (const filePath of paths) {
+                const buffer = await readFile(filePath).catch(() => null);
+                if (!buffer) throw new Error(`读取产物失败：${filePath}`);
+                const mime = IMAGE_MIME_BY_EXT[extname(filePath).toLowerCase()] || "application/octet-stream";
+                payloads.push({ name: filePath.split(/[\\/]/).pop(), dataUrl: `data:${mime};base64,${buffer.toString("base64")}` });
+            }
+            return callPage("drama_asset_bind", { ...args, files: payloads });
+        },
+    },
+    drama_asset_confirm: {
+        description: "批量审核确认清单条目（结论=已确认，审核轮次留档，审核人=MCP）；需修改请用 drama_asset_upsert 把状态改回待产出并在审核意见说明原因。",
+        schema: {
+            project: z.string().optional().describe("项目名，缺省取活跃项目名"),
+            ids: z.array(z.string().min(1)).min(1).describe("条目编号数组"),
+            comment: z.string().optional().describe("审核意见"),
+        },
+    },
+    drama_episode_check: {
+        description: "开工前检查：返回该集引用资产的缺产出/未确认/依赖阻塞清单与是否可开工；不可开工时先补齐并确认资产（drama_asset_upsert/bind/confirm）。",
+        schema: {
+            project: z.string().optional().describe("项目名，缺省取活跃项目名"),
+            episode: z.string().min(1).describe("集号，如 ep01"),
+        },
+    },
+    drama_episode_export: {
+        description: "把浏览器活跃项目的分镜导出为 分集/<集>/分镜稿.md 九字段表，并把该集分镜图归档到 分集/<集>/shots/（返回归档数）；导出后可对照分镜稿审核资产。",
+        schema: {
+            project: z.string().optional().describe("项目名，缺省取活跃项目名"),
+            episode: z.string().min(1).describe("集号，如 ep01"),
+        },
+    },
 };
 
 const server = new McpServer({ name: "drama-bridge", version: "0.1.0" });
@@ -224,7 +322,9 @@ for (const [name, tool] of Object.entries(TOOLS)) {
         { description: tool.description, ...(tool.schema ? { inputSchema: tool.schema } : {}) },
         async (args) => {
             try {
-                return { content: [{ type: "text", text: JSON.stringify(await callPage(name, args), null, 2) }] };
+                // 带 handler 的工具（如图片注入）在适配器侧先预处理再转发页面，其余直接透传
+                const data = tool.handler ? await tool.handler(args) : await callPage(name, args);
+                return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
             } catch (error) {
                 return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
             }

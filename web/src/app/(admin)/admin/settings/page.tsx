@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 
 import { ChannelModelSelectorModal } from "@/components/channel-model-selector-modal";
-import { modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
+import { COMFYUI_WORKFLOW_PRESETS, COMFYUI_WORKFLOW_PRESET_IDS, COMFYUI_WORKFLOW_PROTOCOL, modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
 import { fetchAdminSettings, fetchChannelModels, measureAdminStorageProvider, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings, type AdminStorageProvider } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -200,6 +200,8 @@ export default function AdminSettingsPage() {
     const fetchChannelModelList = async () => {
         if (!token) return;
         const channel = channelForm.getFieldsValue();
+        // autodl 无 /models 接口：ComfyUI 协议直接返回标准工作流预设
+        if (channel?.protocol === COMFYUI_WORKFLOW_PROTOCOL) return [...COMFYUI_WORKFLOW_PRESET_IDS];
         if (!channel?.baseUrl) {
             message.warning("请先填写接口地址");
             return;
@@ -837,9 +839,11 @@ export default function AdminSettingsPage() {
                                             { label: "KIE", value: "kie" },
                                             { label: "MiMo", value: "mimo" },
                                             { label: "阿里云百炼", value: "dashscope" },
+                                            { label: "ComfyUI 工作流", value: "comfyui" },
                                         ]}
                                         onChange={(protocol: AdminModelChannel["protocol"]) => {
                                             channelForm.setFieldValue("baseUrl", modelChannelDefaultBaseUrls[protocol]);
+                                            if (protocol === COMFYUI_WORKFLOW_PROTOCOL && !(channelForm.getFieldValue("models") || []).length) channelForm.setFieldValue("models", [...COMFYUI_WORKFLOW_PRESET_IDS]);
                                         }}
                                     />
                                 </Form.Item>
@@ -906,6 +910,7 @@ export default function AdminSettingsPage() {
                     <ChannelModelSelectorModal
                         models={channelForm.getFieldValue("models") || []}
                         sourceModels={knownModels}
+                        presets={channelForm.getFieldValue("protocol") === COMFYUI_WORKFLOW_PROTOCOL ? COMFYUI_WORKFLOW_PRESETS : undefined}
                         onCancel={closeChannelModelSelector}
                         onConfirm={confirmChannelModelSelector}
                         onFetchModels={fetchChannelModelList}

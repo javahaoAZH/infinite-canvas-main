@@ -6,16 +6,19 @@ import { useMemo, useState } from "react";
 
 type ModelSelectTabKey = "new" | "current";
 
+type ModelPreset = { value: string; label: string };
+
 type ChannelModelSelectorModalProps = {
     models: string[];
     sourceModels?: string[];
+    presets?: ModelPreset[];
     onCancel: () => void;
     onConfirm: (models: string[]) => void;
     onFetchModels: () => Promise<string[] | undefined>;
     onModelsFetched?: (models: string[]) => void;
 };
 
-export function ChannelModelSelectorModal({ models, sourceModels = [], onCancel, onConfirm, onFetchModels, onModelsFetched }: ChannelModelSelectorModalProps) {
+export function ChannelModelSelectorModal({ models, sourceModels = [], presets = [], onCancel, onConfirm, onFetchModels, onModelsFetched }: ChannelModelSelectorModalProps) {
     const { message } = App.useApp();
     const [source, setSource] = useState(() => uniqueModels(sourceModels));
     const [existing, setExisting] = useState(() => uniqueModels(models));
@@ -69,6 +72,15 @@ export function ChannelModelSelectorModal({ models, sourceModels = [], onCancel,
         setSelected((current) => (checked ? uniqueModels([...current, model]) : current.filter((item) => item !== model)));
     };
 
+    // 预设模型点击即登记：未入列表时先补进已有列表再勾选
+    const togglePreset = (value: string) => {
+        const checked = !selected.includes(value);
+        if (checked) setExisting((current) => uniqueModels([...current, value]));
+        toggleModel(value, checked);
+    };
+
+    const presetLabel = (model: string) => presets.find((preset) => preset.value === model)?.label || "";
+
     const selectActiveModels = () => setSelected((current) => uniqueModels([...current, ...activeModels]));
     const clearActiveModels = () => {
         const active = new Set(activeModels);
@@ -99,6 +111,16 @@ export function ChannelModelSelectorModal({ models, sourceModels = [], onCancel,
             destroyOnHidden
         >
             <Flex vertical gap={14}>
+                {presets.length ? (
+                    <Flex gap={8} wrap align="center">
+                        <Typography.Text type="secondary">推荐模型：</Typography.Text>
+                        {presets.map((preset) => (
+                            <Button key={preset.value} size="small" type={selected.includes(preset.value) ? "primary" : "default"} onClick={() => togglePreset(preset.value)}>
+                                {preset.label}
+                            </Button>
+                        ))}
+                    </Flex>
+                ) : null}
                 <Flex gap={12} wrap>
                     <Input.Search placeholder="搜索模型" allowClear value={keyword} onChange={(event) => setKeyword(event.target.value)} style={{ flex: "1 1 260px" }} />
                     <Space.Compact style={{ flex: "1 1 320px" }}>
@@ -135,7 +157,7 @@ export function ChannelModelSelectorModal({ models, sourceModels = [], onCancel,
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", columnGap: 24, rowGap: 12 }}>
                             {activeModels.map((model) => (
                                 <Checkbox key={model} checked={selected.includes(model)} onChange={(event) => toggleModel(model, event.target.checked)}>
-                                    <Typography.Text style={{ wordBreak: "break-all" }}>{model}</Typography.Text>
+                                    <Typography.Text style={{ wordBreak: "break-all" }}>{presetLabel(model) ? `${presetLabel(model)} · ${model}` : model}</Typography.Text>
                                 </Checkbox>
                             ))}
                         </div>

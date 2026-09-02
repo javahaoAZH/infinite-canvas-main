@@ -7,6 +7,7 @@ import { isGrok2APITtsConfig, normalizeGrokTtsFormat, normalizeGrokTtsLanguage, 
 import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoiceDesignModel, normalizeMimoTtsFormat, normalizeMimoTtsVoice } from "@/lib/mimo-tts";
 import { geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, isGeminiTtsModel } from "@/lib/gemini";
 import { geminiPcmBase64ToWav, normalizeGeminiTtsVoice } from "@/lib/gemini-tts";
+import { assertComfyUIResponseOk, comfyUIHeaders, comfyUIPollUrl, comfyUISubmitUrl, createComfyUITtsBody, isComfyUIWorkflowConfig, parseComfyUITaskId, parseComfyUITaskStatus } from "@/lib/comfyui-workflow";
 import { downloadRemoteMedia, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { buildApiUrl, channelIdForActiveModel, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -36,6 +37,8 @@ type GeminiAudioResponse = { candidates?: Array<{ content?: { parts?: Array<{ in
 const grokTtsVoiceRequests = new Map<string, Promise<GrokTtsVoice[]>>();
 
 function usesAccountProxy(config: AiConfig) {
+    // ComfyUI 工作流（如 indextts2）后端无对应转发，一律浏览器直连 autodl（裸令牌）
+    if (isComfyUIWorkflowConfig(config, config.model || config.audioModel)) return false;
     const token = useUserStore.getState().token;
     return config.channelMode === "remote" || (config.channelMode === "local" && Boolean(token));
 }
@@ -120,6 +123,10 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, r
             const response = await axios.post<MiMoAudioResponse>(aiApiUrl(config, "/chat/completions"), body, { headers: aiHeaders(config) });
             return decodeMiMoAudio(response.data, format);
         }
+        if (isComfyUIWorkflowConfig(config, model)) {
+            const url = await requestComfyUIWorkflowTts(config, model, prompt, referenceAudio);
+            return downloadRemoteMedia(url);
+        }
 
         const format = audioResponseFormat(config, model);
         const body = await buildAudioSpeechRequest(config, model, prompt, referenceAudio);
@@ -129,6 +136,22 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, r
         return response.data.type.startsWith("audio/") ? response.data : new Blob([response.data], { type: audioMimeType(format) });
     } catch (error) {
         throw new Error(readAxiosError(error, "音频生成失败"));
+    }
+}
+
+// ComfyUI 工作流 TTS（indextts2）：提交任务 → 轮询至成功 → 返回产物 URL（wav）
+async function requestComfyUIWorkflowTts(config: AiConfig, model: string, prompt: string, referenceAudio?: ReferenceAudio) {
+    const headers = comfyUIHeaders(config, model);
+    const body = await createComfyUITtsBody(prompt, referenceAudio);
+    const submit = await axios.post<Record<string, unknown>>(comfyUISubmitUrl(config, model), body, { headers });
+    assertComfyUIResponseOk(submit.data);
+    const taskId = parseComfyUITaskId(submit.data);
+    for (; ;) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const poll = await axios.get<Record<string, unknown>>(comfyUIPollUrl(config, model, taskId), { headers });
+        const parsed = parseComfyUITaskStatus(poll.data);
+        if (parsed.status === "completed") return parsed.url;
+        if (parsed.status === "failed") throw new Error(parsed.message || "配音生成失败");
     }
 }
 
@@ -248,6 +271,7 @@ async function buildAudioSpeechRequest(config: AiConfig, model: string, prompt: 
 }
 
 function audioResponseFormat(config: AiConfig, model: string) {
+    if (isComfyUIWorkflowConfig(config, model)) return "wav";
     if (isGeminiTtsModel(model) && isGeminiConfig(config, model)) return "wav";
     if (isDashScopeTtsModel(model) && isDashScopeConfig(config, model)) return "mp3";
     if (isGlmTtsModel(model)) return normalizeGlmTtsFormat(config.glmTtsFormat);
@@ -341,7 +365,7 @@ function decodeMiMoAudio(payload: MiMoAudioResponse, format: string) {
 function assertAudioConfig(config: AiConfig, model: string) {
     if (!model) throw new Error("请先配置音频模型");
     if (config.channelMode !== "local") return;
-    if (!isMimoTtsModel(model) && !isGeminiConfig(config, model)) {
+    if (!isMimoTtsModel(model) && !isGeminiConfig(config, model) && !isComfyUIWorkflowConfig(config, model)) {
         if (!config.baseUrl.trim()) throw new Error("请先配置 Base URL");
         if (!config.apiKey.trim()) throw new Error("请先配置 API Key");
         return;

@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "prompt_node": "6.text",
+  "negative_prompt_node": "7.text",
+  "image_node": "4.image",
+  "parameters": {
+    "size": {
+      "type": "size",
+      "default": "960x544",
+      "description": "Video frame size as WIDTHxHEIGHT.",
+      "maps": [
+        { "ref": "8.width", "part": "width" },
+        { "ref": "8.height", "part": "height" }
+      ]
+    },
+    "duration": {
+      "type": "float",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 8,
+      "description": "Video duration in seconds; converted to latent length via fps (length = seconds * fps).",
+      "maps": [
+        { "ref": "8.length", "transform": "seconds_to_frames", "fps_param": "fps", "round": "int" }
+      ]
+    },
+    "fps": {
+      "type": "int",
+      "default": 24,
+      "minimum": 1,
+      "maximum": 60,
+      "maps": [
+        { "ref": "12.frame_rate" }
+      ]
+    },
+    "seed": {
+      "type": "int",
+      "description": "Sampling seed.",
+      "maps": [
+        { "ref": "10.seed" }
+      ]
+    },
+    "steps": {
+      "type": "int",
+      "default": 20,
+      "minimum": 2,
+      "maximum": 50,
+      "maps": [
+        { "ref": "10.steps" }
+      ]
+    },
+    "cfg": {
+      "type": "float",
+      "default": 5.0,
+      "minimum": 1.0,
+      "maximum": 12.0,
+      "maps": [
+        { "ref": "10.cfg" }
+      ]
+    }
+  }
+}

@@ -1,8 +1,8 @@
 package mcpadapter
 
-// 16 个漫剧工具：名称/入参/行为与页面侧 BRIDGE_TOOLS 处理器一一对应，
+// 漫剧工具：名称/入参/行为与页面侧 BRIDGE_TOOLS 处理器一一对应，
 // 漫剧工具描述与 inputSchema 逐行对照 mcp-adapter/drama-mcp.mjs（zod → JSON Schema 字面量），
-// 后两个为页面侧新增的通用代理工具，同样纯透传。
+// 含页面侧通用代理工具与资产清单六工具（drama_asset_* / drama_episode_*），同样纯透传。
 
 // 「AI 检测 → 修复 → 回写」闭环提示，同 drama-mcp.mjs LOOP_HINT
 const loopHint = "推荐闭环：先 drama_get_skills 获取写法规范 → 产出内容 → drama_review_shots 检测 → 对不合格 findings 用 drama_update_shots 回写修复 → 复检通过后 drama_start_production。"
@@ -215,6 +215,83 @@ var toolDefs = []toolDef{
 				"patch": {"type": "object", "description": "action=set 时要更新的配置字段，非法字段报中文错误"}
 			},
 			"required": ["action"]
+		}`,
+	},
+	{
+		name:        "drama_asset_list",
+		description: "查询项目资产清单（D 盘项目文件夹 资产清单.json 为唯一事实源，三区分离：store 工作区/清单发布区/history 历史区）：可按分类（角色/场景/道具/生物/特效/图形）、状态（待产出/制作中/待审核/需修改/已确认/已归档）、优先级（P0-P3）过滤；返回条目含版本、审核记录、锁定段、依赖、用于。",
+		inputSchema: `{
+			"type": "object",
+			"properties": {
+				"project": {"type": "string", "description": "项目名，缺省取活跃项目名"},
+				"category": {"type": "string", "description": "分类过滤"},
+				"status": {"type": "string", "description": "状态过滤"},
+				"priority": {"type": "string", "description": "优先级过滤"}
+			}
+		}`,
+	},
+	{
+		name:        "drama_asset_upsert",
+		description: "登记/更新清单条目（按编号合并，新条目自动编号）：分类（六类之一）与名称必填；优先级 P0-P3；依据（如 第2章·卡§9）；锁定段（角色卡生图提示词原文，一字不改）；规格；依赖（条目编号数组）；用于（集.镜数组，如 ep01.镜头3）。状态走六态机，不要直接跳已确认。",
+		inputSchema: `{
+			"type": "object",
+			"properties": {
+				"project": {"type": "string", "description": "项目名，缺省取活跃项目名"},
+				"entry": {"type": "object", "description": "条目对象（中文字段名：编号/分类/名称/规格/优先级/状态/依据/锁定段/依赖/用于）"}
+			},
+			"required": ["entry"]
+		}`,
+	},
+	{
+		name:        "drama_asset_bind",
+		description: "把本地产物绑定到清单条目成为新版本 vNNN（旧版文件自动移入 history/，条目状态→待审核）；files 为本地绝对路径（适配器转 base64 转发）；source 可选复跑参数 JSON 文本（提示词全文/尺寸/种子/渠道）。绑定后等人工审核：drama_asset_confirm 或资产页。",
+		inputSchema: `{
+			"type": "object",
+			"properties": {
+				"project": {"type": "string", "description": "项目名，缺省取活跃项目名"},
+				"id": {"type": "string", "minLength": 1, "description": "条目编号"},
+				"files": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "产物本地绝对路径"},
+				"note": {"type": "string", "description": "版本备注"},
+				"source": {"type": "string", "description": "复跑参数 JSON 文本"}
+			},
+			"required": ["id", "files"]
+		}`,
+	},
+	{
+		name:        "drama_asset_confirm",
+		description: "批量审核确认清单条目（结论=已确认，审核轮次留档，审核人=MCP）；需修改请用 drama_asset_upsert 把状态改回待产出并在审核意见说明原因。",
+		inputSchema: `{
+			"type": "object",
+			"properties": {
+				"project": {"type": "string", "description": "项目名，缺省取活跃项目名"},
+				"ids": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "条目编号数组"},
+				"comment": {"type": "string", "description": "审核意见"}
+			},
+			"required": ["ids"]
+		}`,
+	},
+	{
+		name:        "drama_episode_check",
+		description: "开工前检查：返回该集引用资产的缺产出/未确认/依赖阻塞清单与是否可开工；不可开工时先补齐并确认资产（drama_asset_upsert/bind/confirm）。",
+		inputSchema: `{
+			"type": "object",
+			"properties": {
+				"project": {"type": "string", "description": "项目名，缺省取活跃项目名"},
+				"episode": {"type": "string", "minLength": 1, "description": "集号，如 ep01"}
+			},
+			"required": ["episode"]
+		}`,
+	},
+	{
+		name:        "drama_episode_export",
+		description: "把浏览器活跃项目的分镜导出为 分集/<集>/分镜稿.md 九字段表，并把该集分镜图归档到 分集/<集>/shots/（返回归档数）；导出后可对照分镜稿审核资产。",
+		inputSchema: `{
+			"type": "object",
+			"properties": {
+				"project": {"type": "string", "description": "项目名，缺省取活跃项目名"},
+				"episode": {"type": "string", "minLength": 1, "description": "集号，如 ep01"}
+			},
+			"required": ["episode"]
 		}`,
 	},
 }

@@ -1,0 +1,213 @@
+[
+  {
+    "job_id": "3e1fcaa3c40a41b7ba880354b8925bf9",
+    "created_at": 1788220550,
+    "status": "completed",
+    "kind": "txt2img",
+    "workflow": "qwen-image-edit.json",
+    "requested_model": "qwen-image-edit",
+    "error": null,
+    "request_json": {
+      "kind": "txt2img",
+      "workflow": "qwen-image-edit.json",
+      "model": "qwen-image-edit",
+      "prompt": "{\"title\":\"第一章 初入\",\"characters\":[{\"name\":\"陆江仙\",\"description\":\"二十五岁左右的青年男子，黑色短发微乱，眼下带青黑眼袋，面色苍白疲惫，穿灰色连帽卫衣与深色运动裤，佱坐在昏暗的电脑桌前，屏幕蓝光映在脸上，手边立着一只开了盖的啤酒瓶。\"}],\"shots\":[{\"shot\":1,\"description\":\"白色雾气弥漫的大湖湖面上，一名广袖白裙的朦胧女子静立，脸庞被薄雾遮挡看不清五官，目光落在画面中央；远处雾中隐现仙宗山门轮廓与几点刀光。\",\"dialogue\":\"将《太阴吐纳练气诀》与《月华纪要秘旨》交出，我等可以只废去你修为。\",\"narration\":\"\",\"seconds\":5},{\"shot\":2,\"description\":\"浓密的黑暗中，一道笔直的白色光柱贯穿画面，光柱中密密麻麻的金色咒文向四周舒展飘散，如星辰撒满夜空。\",\"dialogue\":\"\",\"narration\":\"随着一声如同玻璃破碎的哢嚓声，世界，亮了。\",\"seconds\":5},{\"shot\":3,\"description\":\"高空俯瞰视角：无边无际...[truncated]",
+      "quality": "standard"
+    },
+    "outputs": [
+      {
+        "filename": "10__c2a_qwenedit_00012_.png",
+        "url": "https://u399822-85b3-74c9a625.nmb1.seetacloud.com:8443/runs/3e1fcaa3c40a41b7ba880354b8925bf9/10__c2a_qwenedit_00012_.png",
+        "media_type": "image/png",
+        "node_id": "10",
+        "output_key": "images"
+      }
+    ]
+  },
+  {
+    "job_id": "33932ebbeacc4c1ab44472a7fd69bf12",
+    "created_at": 1788220687,
+    "status": "completed",
+    "kind": "txt2img",
+    "workflow": "qwen-image-edit.json",
+    "requested_model": null,
+    "error": null,
+    "request_json": {
+      "kind": "txt2img",
+      "workflow": "qwen-image-edit.json",
+      "prompt": "Use the following text as the complete prompt. Do not rewrite it:\n二十五岁左右的青年男子，黑色短发微乱，眼下带青黑眼袋，面色苍白疲惫，穿灰色连帽卫衣与深色运动裤，佱坐在昏暗的电脑桌前，屏幕蓝光映在脸上，手边立着一只开了盖的啤酒瓶。，角色立绘，全身像，纯白背景，清晰封闭描边，大色块平涂上色，明暗两档分层，高光边缘锐利，动画胶片质感，悬浮仙山云海与发光法阵流光，汉服广袖与玉簪法器，青金高饱和仙气光效，同一角色各视图保持同一时刻、同一造型与同一配色，发型服饰特征完全一致",
+      "standard_params": {
+        "size": "1024x1024"
+      }
+    },
+    "outputs": [
+      {
+        "filename": "10__c2a_qwenedit_00013_.png",
+        "url": "https://u399822-85b3-74c9a625.nmb1.seetacloud.com:8443/runs/33932ebbeacc4c1ab44472a7fd69bf12/10__c2a_qwenedit_00013_.png",
+        "media_type": "image/png",
+        "node_id": "10",
+        "output_key": "images"
+      }
+    ]
+  },
+  {
+    "job_id": "4b83f2f7c733496e9508519950d49fd0",
+    "created_at": 1788220687,
+    "status": "completed",
+    "kind": "txt2img",
+    "workflow": "qwen-image-edit.json",
+    "requested_model": null,
+    "error": null,
+    "request_json": {
+      "kind": "txt2img",
+      "workflow": "qwen-image-edit.json",
+      "prompt": "Use the following text as the complete prompt. Do not rewrite it:\n二十五岁左右的青年男子，黑色短发微乱，眼下带青黑眼袋，面色苍白疲惫，穿灰色连帽卫衣与深色运动裤，佱坐在昏暗的电脑桌前，屏幕蓝光映在脸上，手边立着一只开了盖的啤酒瓶。，角色立绘，全身像，纯白背景，清晰封闭描边，大色块平涂上色，明暗两档分层，高光边缘锐利，动画胶片质感，悬浮仙山云海与发光法阵流光，汉服广袖与玉簪法器，青金高饱和仙气光效，同一角色各视图保持同一时刻、同一造型与同一配色，发型服饰特征完全一致",
+      "standard_params": {
+        "size": "1024x1024"
+      }
+    },
+    "outputs": [
+      {
+        "filename": "10__c2a_qwenedit_00013_.png",
+        "url": "https://u399822-85b3-74c9a625.nmb1.seetacloud.com:8443/runs/4b83f2f7c733496e9508519950d49fd0/10__c2a_qwenedit_00013_.png",
+        "media_type": "image/png",
+        "node_id": "10",
+        "output_key": "images"
+      }
+    ]
+  },
+  {
+    "job_id": "8baba41ed81643f584babd4f0aeb4a0c",
+    "created_at": 1788220687,
+    "status": "completed",
+    "kind": "txt2img",
+    "workflow": "qwen-image-edit.json",
+    "requested_model": null,
+    "error": null,
+    "request_json": {
+      "kind": "txt2img",
+      "workflow": "qwen-image-edit.json",
+      "prompt": "Use the following text as the complete prompt. Do not rewrite it:\n二十五岁左右的青年男子，黑色短发微乱，眼下带青黑眼袋，面色苍白疲惫，穿灰色连帽卫衣与深色运动裤，佱坐在昏暗的电脑桌前，屏幕蓝光映在脸上，手边立着一只开了盖的啤酒瓶。，角色立绘，全身像，纯白背景，清晰封闭描边，大色块平涂上色，明暗两档分层，高光边缘锐利，动画胶片质感，悬浮仙山云海与发光法阵流光，汉服广袖与玉簪法器，青金高饱和仙气光效，同一角色各视图保持同一时刻、同一造型与同一配色，发型服饰特征完全一致",
+      "standard_params": {
+        "size": "1024x1024"
+      }
+    },
+    "outputs": [
+      {
+        "filename": "10__c2a_qwenedit_00013_.png",
+        "url": "https://u399822-85b3-74c9a625.nmb1.seetacloud.com:8443/runs/8baba41ed81643f584babd4f0aeb4a0c/10__c2a_qwenedit_00013_.png",
+        "media_type": "image/png",
+        "node_id": "10",
+        "output_key": "images"
+      }
+    ]
+  },
+  {
+    "job_id": "fd0c756e4137482db83769e628eedd5a",
+    "created_at": 1788220687,
+    "status": "completed",
+    "kind": "txt2img",
+    "workflow": "qwen-image-edit.json",
+    "requested_model": null,
+    "error": null,
+    "request_json": {
+      "kind": "txt2img",
+      "workflow": "qwen-image-edit.json",
+      "prompt": "Use the following text as the complete prompt. Do not rewrite it:\n二十五岁左右的青年男子，黑色短发微乱，眼下带青黑眼袋，面色苍白疲惫，穿灰色连帽卫衣与深色运动裤，佱坐在昏暗的电脑桌前，屏幕蓝光映在脸上，手边立着一只开了盖的啤酒瓶。，角色立绘，全身像，纯白背景，清晰封闭描边，大色块平涂上色，明暗两档分层，高光边缘锐利，动画胶片质感，悬浮仙山云海与发光法阵流光，汉服广袖与玉簪法器，青金高饱和仙气光效，同一角色各视图保持同一时刻、同一造型与同一配色，发型服饰特征完全一致",
+      "standard_params": {
+        "size": "1024x1024"
+      }
+    },
+    "outputs": [
+      {
+        "filename": "10__c2a_qwenedit_00013_.png",
+        "url": "https://u399822-85b3-74c9a625.nmb1.seetacloud.com:8443/runs/fd0c756e4137482db83769e628eedd5a/10__c2a_qwenedit_00013_.png",
+        "media_type": "image/png",
+        "node_id": "10",
+        "output_key": "images"
+      }
+    ]
+  },
+  {
+    "job_id": "2a88300da84a4d25b37796e14e8dca6d",
+    "created_at": 1788220796,
+    "status": "completed",
+    "kind": "img2img",
+    "workflow": "qwen-image-edit.json",
+    "requested_model": null,
+    "error": null,
+    "request_json": {
+      "kind": "img2img",
+      "workflow": "qwen-image-edit.json",
+      "prompt": "Use the following text as the complete prompt. Do not rewrite it:\r\n白色雾气弥漫的大湖湖面上，一名广袖白裙的朦胧女子静立，脸庞被薄雾遮挡看不清五官，目光落在画面中央；远处雾中隐现仙宗山门轮廓与几点刀光。，画面主体突出，身份特征清晰可辨，出场角色：陆江仙：二十五岁左右的青年男子，黑色短发微乱，眼下带青黑眼袋，面色苍白疲惫，穿灰色连帽卫衣与深色运动裤，佱坐在昏暗的电脑桌前，屏，构图与视角贴合本镜情绪，光源方向明确，材质区分清晰，画框内只呈现描述中出现的人和物，背景边界清楚，清晰封闭描边，大色块平涂上色，明暗两档分层，高光边缘锐利，动画胶片质感，面部识别点与目光可辨，背景不争夺注意中心，关键手势与持物不被画框裁掉，悬浮仙山云海与发光法阵流光，汉服广袖与玉簪法器，青金高饱和仙气光效，画面不出现现代服饰与电器，画面无文字，无水印",
+      "standard_params": {
+        "size": "1024x1024"
+      },
+      "image": {
+        "source": "stored_input",
+        "value": "comfyui2api/b1a134038ee7--陆江仙.png"
+      }
+    },
+    "outputs": [
+      {
+        "filename": "10__c2a_qwenedit_00014_.png",
+        "url": "https://u399822-85b3-74c9a625.nmb1.seetacloud.com:8443/runs/2a88300da84a4d25b37796e14e8dca6d/10__c2a_qwenedit_00014_.png",
+        "media_type": "image/png",
+        "node_id": "10",
+        "output_key": "images"
+      }
+    ]
+  },
+  {
+    "job_id": "2fc72a117ff7468f9fcfc8c5acbba294",
+    "created_at": 1788220796,
+    "status": "completed",
+    "kind": "img2img",
+    "workflow": "qwen-image-edit.json",
+    "requested_model": null,
+    "error": null,
+    "request_json": {
+      "kind": "img2img",
+      "workflow": "qwen-image-edit.json",
+      "prompt": "Use the following text as the complete prompt. Do not rewrite it:\r\n浓密的黑暗中，一道笔直的白色光柱贯穿画面，光柱中密密麻麻的金色咒文向四周舒展飘散，如星辰撒满夜空。，画面主体突出，身份特征清晰可辨，出场角色：陆江仙：二十五岁左右的青年男子，黑色短发微乱，眼下带青黑眼袋，面色苍白疲惫，穿灰色连帽卫衣与深色运动裤，佱坐在昏暗的电脑桌前，屏，构图与视角贴合本镜情绪，光源方向明确，材质区分清晰，画框内只呈现描述中出现的人和物，背景边界清楚，清晰封闭描边，大色块平涂上色，明暗两档分层，高光边缘锐利，动画胶片质感，视觉重点清楚，不被氛围层遮挡，前中后景层级分明，身份锚点清晰可辨，不被氛围层吞没，悬浮仙山云海与发光法阵流光，汉服广袖与玉簪法器，青金高饱和仙气光效，画面不出现现代服饰与电器，画面无文字，无水印",
+      "standard_params": {
+        "size": "1024x1024"
+      },
+      "image": {
+        "source": "stored_input",
+        "value": "comfyui2api/12fb342f569c--陆江仙.png"
+      }
+    },
+    "outputs": [
+      {
+        "filename": "10__c2a_qwenedit_00015_.png",
+        "url": "https://u399822-85b3-74c9a625.nmb1.seetacloud.com:8443/runs/2fc72a117ff7468f9fcfc8c5acbba294/10__c2a_qwenedit_00015_.png",
+        "media_type": "image/png",
+        "node_id": "10",
+        "output_key": "images"
+      }
+    ]
+  },
+  {
+    "job_id": "b9b9f37ea11f42b2b38c67f22abcdf20",
+    "created_at": 1788220916,
+    "status": "pending",
+    "kind": "img2img",
+    "workflow": "qwen-image-edit.json",
+    "requested_model": null,
+    "error": null,
+    "request_json": {
+      "kind": "img2img",
+      "workflow": "qwen-image-edit.json",
+      "prompt": "Use the following text as the complete prompt. Do not rewrite it:\r\n高空俯瞰视角：无边无际的墨绿色原始森林，一弯月牙形小湖波光粼粼，湖边坐落着一小片秸秆扎顶的褐黄色小屋与成片稻田，炊烟细直地升起。，画面主体突出，身份特征清晰可辨，出场角色：陆江仙：二十五岁左右的青年男子，黑色短发微乱，眼下带青黑眼袋，面色苍白疲惫，穿灰色连帽卫衣与深色运动裤，佱坐在昏暗的电脑桌前，屏，构图与视角贴合本镜情绪，光源方向明确，材质区分清晰，画框内只呈现描述中出现的人和物，背景边界清楚，清晰封闭描边，大色块平涂上色，明暗两档分层，高光边缘锐利，动画胶片质感，特效起点与受力点可辨，人物轮廓与特效层次分离，粒子与碎片不遮挡身份锚点，悬浮仙山云海与发光法阵流光，汉服广袖与玉簪法器，青金高饱和仙气光效，画面不出现现代服饰与电器，画面无文字，无水印",
+      "standard_params": {
+        "size": "1024x1024"
+      },
+      "image": {
+        "source": "stored_input",
+        "value": "comfyui2api/f6c71be2ac3c--陆江仙.png"
+      }
+    },
+    "outputs": []
+  }
+]

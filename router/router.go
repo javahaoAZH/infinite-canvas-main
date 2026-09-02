@@ -97,6 +97,13 @@ func New() *gin.Engine {
 		handler.ServeRenderOutput(c.Writer, c.Request, c.Param("id"))
 	})
 	v1.POST("/render/local-media", gin.WrapF(handler.StageRenderMedia))
+	v1.GET("/drama-assets/manifest", gin.WrapF(handler.DramaAssetManifest))
+	v1.PUT("/drama-assets/entry", gin.WrapF(handler.DramaAssetUpsertEntry))
+	v1.POST("/drama-assets/review", gin.WrapF(handler.DramaAssetReview))
+	v1.POST("/drama-assets/bind", gin.WrapF(handler.DramaAssetBind))
+	v1.POST("/drama-assets/file", gin.WrapF(handler.DramaAssetWriteFile))
+	v1.GET("/drama-assets/check", gin.WrapF(handler.DramaAssetCheck))
+	v1.GET("/drama-assets/file", gin.WrapF(handler.DramaAssetServe))
 	v1.GET("/videos/:id", func(c *gin.Context) {
 		handler.AIVideo(c.Writer, c.Request, c.Param("id"))
 	})

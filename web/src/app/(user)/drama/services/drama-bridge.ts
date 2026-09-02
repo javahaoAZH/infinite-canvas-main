@@ -10,10 +10,14 @@ import { reviewShots } from "@/app/(user)/drama/services/drama-review";
 import { DEFAULT_DIRECTOR_OPTIONS } from "@/app/(user)/drama/services/director-planner";
 import { maybeRestartDirector, startDirector } from "@/app/(user)/drama/services/director-runner";
 import { apiGet, apiPost } from "@/services/api/request";
+import { bindAssetFiles, checkEpisodeAssets, fetchAssetManifest, reviewAssetEntry, upsertAssetEntry, writeAssetProjectFile, type AssetEntry } from "@/services/api/drama-assets";
 import { getRenderTask, type RenderTaskResponse } from "@/services/api/render";
+import { resolveMediaUrl } from "@/services/file-storage";
+import { uploadImage } from "@/services/image-storage";
 import { getEffectiveConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useDirectorStore, type DirectorPlanOptions } from "@/stores/use-director-store";
-import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
+import { CHARACTER_VIEW_ORDER } from "@/stores/use-asset-store";
+import { useDramaStore, type DramaMedia, type DramaProject } from "@/stores/use-drama-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type BridgeStatus = "disconnected" | "connecting" | "connected";
@@ -254,7 +258,40 @@ function lastRenderUrl(): string {
     return /^https?:\/\//.test(url) ? url : "";
 }
 
-// 16 个 MCP 工具的页面侧处理器：全部经 store action / services 函数写数据（绝不直接改内存对象），React 界面经 store 订阅实时刷新
+// 资产工具公共前置：登录令牌；项目名缺省回退当前活跃项目名（清单以项目文件夹为源）
+function requireBridgeToken(): string {
+    const token = useUserStore.getState().token;
+    if (!token) throw new Error("操作资产清单需要先登录");
+    return token;
+}
+
+function assetProjectArg(args: Record<string, unknown>): string {
+    const direct = String(args.project || "").trim();
+    if (direct) return direct;
+    const state = useDramaStore.getState();
+    const active = state.projects.find((item) => item.id === state.activeId);
+    if (!active?.title) throw new Error("project 缺失且无活跃项目可回退");
+    return active.title;
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+    const [meta, base64] = dataUrl.split(",");
+    const mime = meta?.match(/:(.*?);/)?.[1] || "application/octet-stream";
+    const binary = atob(base64 || "");
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+    const buffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+}
+
+// 17 个 MCP 工具的页面侧处理器：全部经 store action / services 函数写数据（绝不直接改内存对象），React 界面经 store 订阅实时刷新
 const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> = {
     // 1. 项目列表（按 updatedAt 倒序）
     drama_list_projects: () => ({
@@ -286,6 +323,9 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
                 dialogue: shot.dialogue,
                 narration: shot.narration || "",
                 seconds: shot.seconds,
+                ...(shot.shotSize ? { shotSize: shot.shotSize } : {}),
+                ...(shot.camera ? { camera: shot.camera } : {}),
+                ...(shot.transition ? { transition: shot.transition } : {}),
                 hasImage: Boolean(project.shotImages[shot.id]),
                 hasVideo: Boolean(project.shotVideos[shot.id]),
                 hasDialogueAudio: Boolean(project.shotAudios[shot.id]),
@@ -341,7 +381,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         const project = resolveProject(undefined);
         if (!Array.isArray(args.shots) || !args.shots.length) throw new Error("shots 不能为空数组");
         return applyStructuredScript(project.id, {
-            shots: args.shots as Array<{ description?: string; dialogue?: string; narration?: string; seconds?: number }>,
+            shots: args.shots as Array<{ description?: string; dialogue?: string; narration?: string; seconds?: number; shotSize?: string; camera?: string; transition?: string }>,
             ...(Array.isArray(args.characters) ? { characters: args.characters as Array<{ name?: string; description?: string }> } : {}),
         });
     },
@@ -350,7 +390,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
     drama_update_shots: (args) => {
         const project = resolveProject(undefined);
         if (!Array.isArray(args.shots) || !args.shots.length) throw new Error("shots 不能为空数组");
-        return updateDramaShots(project.id, args.shots as Array<{ id: string; description?: string; dialogue?: string; narration?: string; seconds?: number }>);
+        return updateDramaShots(project.id, args.shots as Array<{ id: string; description?: string; dialogue?: string; narration?: string; seconds?: number; shotSize?: string; camera?: string; transition?: string }>);
     },
 
     // 8. 技能规范目录（题材卡 / 场景 / 画风 / 镜头词表 / 分镜与角色写法规范）
@@ -525,6 +565,125 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
             return { ok: true, config: useConfigStore.getState().config };
         }
         throw new Error(`未知 action：${action}，可选 get / set`);
+    },
+
+    // 17. 图片注入（Qoder ImageGen 产物 → 项目）：适配器已读文件转 base64，页面上传后写入立绘候选或分镜图（幂等流水线只补跑缺口）
+    drama_inject_image: async (args) => {
+        const project = resolveProject(args.projectId);
+        const dataUrl = typeof args.dataUrl === "string" ? args.dataUrl : "";
+        if (!dataUrl.startsWith("data:image/")) throw new Error("dataUrl 缺失或不是图片 base64");
+        const target = String(args.target || "");
+        const uploaded = await uploadImage(dataUrl);
+        const media: DramaMedia = { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
+        if (target === "shotImage") {
+            const shotId = typeof args.shotId === "string" ? args.shotId : "";
+            const shot = project.shots.find((item) => item.id === shotId);
+            if (!shot) throw new Error(`分镜不存在：${shotId}，可用 drama_get_project 查看分镜 id`);
+            useDramaStore.getState().updateProject(project.id, { shotImages: { ...project.shotImages, [shotId]: media } });
+            return { ok: true, target: "shotImage", shotId };
+        }
+        if (target === "character") {
+            const byId = typeof args.characterId === "string" ? project.characters.find((character) => character.id === args.characterId) : undefined;
+            const byName = !byId && typeof args.characterName === "string" && args.characterName.trim() ? project.characters.find((character) => character.name === args.characterName!.trim()) : undefined;
+            const character = byId || byName;
+            if (!character) throw new Error(`角色不存在：${String(args.characterId || args.characterName || "")}，可用 drama_get_project 查看角色 id 与名称`);
+            const candidates = [...character.candidates, media];
+            const views = { ...character.views };
+            let assignedView = "";
+            // 缺省自动把注入立绘分配到首个空视图，等价手动步骤的 autoAssignView
+            if (args.autoAssignView !== false) {
+                const emptyView = CHARACTER_VIEW_ORDER.find((viewKey) => !views[viewKey]);
+                if (emptyView) {
+                    views[emptyView] = media;
+                    assignedView = emptyView;
+                }
+            }
+            useDramaStore.getState().updateProject(project.id, { characters: project.characters.map((item) => (item.id === character.id ? { ...item, candidates, views } : item)) });
+            return { ok: true, target: "character", characterId: character.id, candidateCount: candidates.length, ...(assignedView ? { assignedView } : {}) };
+        }
+        throw new Error(`未知 target：${target}，可选 character / shotImage`);
+    },
+
+    // 18. 资产清单查询（D 盘项目文件夹唯一事实源，可按分类/状态/优先级过滤）
+    drama_asset_list: async (args) => {
+        const token = requireBridgeToken();
+        const project = assetProjectArg(args);
+        const manifest = await fetchAssetManifest(token, project);
+        let entries = manifest.条目 || [];
+        if (args.category) entries = entries.filter((entry) => entry.分类 === args.category);
+        if (args.status) entries = entries.filter((entry) => entry.状态 === args.status);
+        if (args.priority) entries = entries.filter((entry) => entry.优先级 === args.priority);
+        return { project, count: entries.length, entries };
+    },
+
+    // 19. 登记/更新清单条目（按编号合并）
+    drama_asset_upsert: async (args) => {
+        const token = requireBridgeToken();
+        const project = assetProjectArg(args);
+        const entry = args.entry as Partial<AssetEntry> | undefined;
+        if (!entry || typeof entry !== "object") throw new Error("entry 必填（对象）");
+        return upsertAssetEntry(token, project, entry);
+    },
+
+    // 20. 绑定本地产物为新版本（旧版自动入 history/，状态→待审核）
+    drama_asset_bind: async (args) => {
+        const token = requireBridgeToken();
+        const project = assetProjectArg(args);
+        const id = String(args.id || "");
+        const files = args.files as Array<{ name?: string; dataUrl?: string }> | undefined;
+        if (!id || !files?.length) throw new Error("id 与 files 必填");
+        const payloads = files.map((file) => ({ name: file.name || "asset.png", blob: dataUrlToBlob(String(file.dataUrl || "")) }));
+        return bindAssetFiles(token, project, id, payloads, String(args.note || ""), args.source ? String(args.source) : undefined);
+    },
+
+    // 21. 批量审核确认（轮次留档）
+    drama_asset_confirm: async (args) => {
+        const token = requireBridgeToken();
+        const project = assetProjectArg(args);
+        const ids = args.ids as string[] | undefined;
+        if (!ids?.length) throw new Error("ids 必填");
+        const updated: AssetEntry[] = [];
+        for (const id of ids) updated.push(await reviewAssetEntry(token, project, id, "MCP", "已确认", String(args.comment || "")));
+        return { confirmed: updated.length, entries: updated };
+    },
+
+    // 22. 开工前检查：该集缺产出/未确认/依赖阻塞
+    drama_episode_check: async (args) => {
+        const token = requireBridgeToken();
+        const project = assetProjectArg(args);
+        const episode = String(args.episode || "");
+        if (!episode) throw new Error("episode 必填（如 ep01）");
+        return checkEpisodeAssets(token, project, episode);
+    },
+
+    // 23. 导出分集分镜稿＋归档分镜图到 分集/<ep>/shots/
+    drama_episode_export: async (args) => {
+        const token = requireBridgeToken();
+        const project = assetProjectArg(args);
+        const episode = String(args.episode || "");
+        if (!episode) throw new Error("episode 必填（如 ep01）");
+        const projectData = useDramaStore.getState().projects.find((item) => item.title === project);
+        if (!projectData) throw new Error(`项目不在浏览器工作区：${project}`);
+        const lines = [`# ${projectData.title} ${episode} 分镜稿`, "", "| 镜号 | 画面描述 | 对白 | 旁白 | 秒数 | 景别 | 运镜 | 转场 | 分镜图 |", "|---|---|---|---|---|---|---|---|---|"];
+        projectData.shots.forEach((shot, index) => {
+            lines.push(`| ${index + 1} | ${shot.description} | ${shot.dialogue || ""} | ${shot.narration || ""} | ${shot.seconds} | ${shot.shotSize || ""} | ${shot.camera || ""} | ${shot.transition || ""} | ${projectData.shotImages[shot.id] ? "有" : "无"} |`);
+        });
+        await writeAssetProjectFile(token, project, `分集/${episode}/分镜稿.md`, lines.join("\n") + "\n");
+        let archived = 0;
+        for (const [index, shot] of projectData.shots.entries()) {
+            const media = projectData.shotImages[shot.id];
+            if (!media) continue;
+            try {
+                const url = await resolveMediaUrl(media.storageKey, media.url);
+                const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+                if (!response.ok) continue;
+                await writeAssetProjectFile(token, project, `分集/${episode}/shots/镜头${String(index + 1).padStart(2, "0")}_分镜图.png`, await blobToBase64(await response.blob()));
+                archived += 1;
+            } catch {
+                // 单镜归档失败不阻断导出
+            }
+        }
+        return { episode, board: `分集/${episode}/分镜稿.md`, archivedShots: archived };
     },
 };
 

@@ -20,7 +20,7 @@ import { grokTtsFormatOptions, grokTtsLanguageOptions, isGrok2APITtsConfig, norm
 import { isGeminiConfig, isGeminiTtsModel } from "@/lib/gemini";
 import { geminiTtsVoiceOptions, normalizeGeminiTtsVoice } from "@/lib/gemini-tts";
 import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoiceDesignModel, mimoTtsFormatOptions, mimoTtsVoiceOptions } from "@/lib/mimo-tts";
-import { modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
+import { COMFYUI_WORKFLOW_PRESETS, COMFYUI_WORKFLOW_PRESET_IDS, COMFYUI_WORKFLOW_PROTOCOL, COMFYUI_WORKFLOW_REQUIREMENT_NOTE, modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
 import { filterChannelModelsByCapability, normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig, type LocalModelChannel, type ModelCapability } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -84,6 +84,8 @@ export function AppConfigModal() {
     const grokTts = isGrok2APITtsConfig({ ...modelConfig, model: config.audioModel, audioModel: config.audioModel }, config.audioModel);
     const geminiTts = isGeminiTtsModel(config.audioModel) && isGeminiConfig({ ...modelConfig, model: config.audioModel, audioModel: config.audioModel }, config.audioModel);
     const modelSelectChannel = normalizeLocalChannels(config).find((channel) => channel.id === modelSelectChannelId);
+    // 存在 ComfyUI 渠道时，视频模型项展示对白/非对白角色分工说明
+    const hasComfyuiChannel = normalizeLocalChannels(config).some((channel) => channel.protocol === COMFYUI_WORKFLOW_PROTOCOL) || (publicSettings?.modelChannel?.channels || []).some((channel) => channel.protocol === COMFYUI_WORKFLOW_PROTOCOL);
 
     useEffect(() => {
         setUserStorage(loadUserS3StorageProvider() || defaultUserStorageProvider());
@@ -368,6 +370,8 @@ export function AppConfigModal() {
 
     const fetchLocalModelList = async () => {
         if (!modelSelectChannel) return;
+        // autodl 无 /models 接口：ComfyUI 协议直接返回标准工作流预设
+        if (modelSelectChannel.protocol === COMFYUI_WORKFLOW_PROTOCOL) return [...COMFYUI_WORKFLOW_PRESET_IDS];
         if (!modelSelectChannel.baseUrl.trim() || !modelSelectChannel.apiKey.trim()) {
             message.error("请先填写该渠道的 Base URL 和 API Key");
             return;
@@ -471,8 +475,9 @@ export function AppConfigModal() {
                                                     { label: "KIE", value: "kie" },
                                                     { label: "MiMo", value: "mimo" },
                                                     { label: "阿里云百炼", value: "dashscope" },
+                                                    { label: "ComfyUI 工作流", value: "comfyui" },
                                                 ]}
-                                                onChange={(protocol: LocalModelChannel["protocol"]) => patchLocalChannel(channel.id, { protocol, baseUrl: modelChannelDefaultBaseUrls[protocol] })}
+                                                onChange={(protocol: LocalModelChannel["protocol"]) => patchLocalChannel(channel.id, { protocol, baseUrl: modelChannelDefaultBaseUrls[protocol], ...(protocol === COMFYUI_WORKFLOW_PROTOCOL && !channel.models.length ? { models: [...COMFYUI_WORKFLOW_PRESET_IDS] } : {}) })}
                                             />
                                             <Input value={channel.baseUrl} placeholder="Base URL" onChange={(event) => patchLocalChannel(channel.id, { baseUrl: event.target.value })} />
                                             <Input.Password value={channel.apiKey} placeholder="API Key" onChange={(event) => patchLocalChannel(channel.id, { apiKey: event.target.value })} />
@@ -492,7 +497,10 @@ export function AppConfigModal() {
                                                 ) : null}
                                             </div>
                                         </div>
-                                        <div className="text-xs text-stone-500">已保存 {channel.models.length} 个模型</div>
+                                        <div className="text-xs text-stone-500">
+                                            已保存 {channel.models.length} 个模型
+                                            {channel.protocol === COMFYUI_WORKFLOW_PROTOCOL ? `｜模型名为 autodl 工作流 ID，标准要求：${COMFYUI_WORKFLOW_REQUIREMENT_NOTE}` : ""}
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -516,7 +524,7 @@ export function AppConfigModal() {
                     )}
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         {modelGroups.map((group) => (
-                            <Form.Item key={group.modelKey} label={group.defaultLabel} className="mb-4">
+                            <Form.Item key={group.modelKey} label={group.defaultLabel} className="mb-4" extra={group.capability === "video" && hasComfyuiChannel ? "对白镜自动走 H3 对口型视频工作流，无需手动切换；此项仅影响非对白镜与手动生视频默认。" : undefined}>
                                 <ModelPicker config={modelConfig} value={modelConfig[group.modelKey]} channelId={modelConfig[group.channelKey]} onChange={(model, channelId) => { updateConfig(group.modelKey, model); if (channelId) updateConfig(group.channelKey, channelId); }} capability={group.capability} fullWidth />
                             </Form.Item>
                         ))}
@@ -749,6 +757,7 @@ export function AppConfigModal() {
             {modelSelectChannel ? (
                 <ChannelModelSelectorModal
                     models={modelSelectChannel.models}
+                    presets={modelSelectChannel.protocol === COMFYUI_WORKFLOW_PROTOCOL ? COMFYUI_WORKFLOW_PRESETS : undefined}
                     onCancel={closeLocalModelSelector}
                     onConfirm={confirmLocalModelSelector}
                     onFetchModels={fetchLocalModelList}

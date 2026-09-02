@@ -16,6 +16,7 @@ export type DirectorTask = {
     subjectId: string; // character.id / shot.id / 配音键(含 :narration) / projectId
     label: string; // 「分镜 7 · 分镜图」等展示文案
     deps: string[]; // 依赖的任务 id；dep 为 skipped 时按"软/硬依赖"决定是否连带跳过
+    softDeps?: string[]; // 弱依赖（对白镜视频→配音）：只等执行完成，成功/跳过/失败均放行，不级联跳过
     hardDep: boolean; // true=依赖产物缺失即无法执行(视频依赖分镜图)；false=可降级执行(分镜图无角色参考)
     status: DirectorTaskStatus;
     attempts: number;

@@ -1,12 +1,13 @@
 "use client";
 
-import { Library, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { Library, Mic, Plus, Sparkles, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { App, Button, Empty, Input, Select, Tag } from "antd";
 import { nanoid } from "nanoid";
 
 import { ART_STYLES, CUSTOM_ART_STYLE_ID, SCENE_PRESETS } from "@/app/(user)/drama/prompts";
 import { generateCharacterCandidates } from "@/app/(user)/drama/services/drama-generation";
+import { uploadAssetMediaFile } from "@/services/file-storage";
 import {
     addCharacterAsset,
     CHARACTER_VIEW_LABELS,
@@ -31,6 +32,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
     const scene = useDramaStore((state) => state.scene);
     const setScene = useDramaStore((state) => state.setScene);
     const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
+    const [voiceBusyIds, setVoiceBusyIds] = useState<Record<string, boolean>>({});
 
     const patchCharacter = (id: string, patch: Partial<DramaCharacter>) => {
         updateProject(project.id, { characters: project.characters.map((character) => (character.id === id ? { ...character, ...patch } : character)) });
@@ -57,6 +59,21 @@ export function CharactersStep({ project }: { project: DramaProject }) {
         if (views[viewKey]?.url === media.url) delete views[viewKey];
         else views[viewKey] = media;
         patchCharacter(character.id, { views });
+    };
+
+    // 音色参考音频上传：走服务端存储拿公网地址（indextts2 克隆入参要求），成功后写入角色/项目（A2）
+    const uploadVoiceRef = async (target: string, file: File, apply: (media: DramaMedia) => void) => {
+        if (!file.type.startsWith("audio/")) return message.warning("请上传音频文件（mp3 / wav / m4a）");
+        setVoiceBusyIds((current) => ({ ...current, [target]: true }));
+        try {
+            const uploaded = await uploadAssetMediaFile(file, "drama-voice-ref");
+            apply({ url: uploaded.url, storageKey: uploaded.storageKey, bytes: uploaded.bytes, mimeType: uploaded.mimeType, durationMs: uploaded.durationMs });
+            message.success("音色参考已保存");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "音色参考上传失败");
+        } finally {
+            setVoiceBusyIds((current) => ({ ...current, [target]: false }));
+        }
     };
 
     const saveToLibrary = (character: DramaCharacter) => {
@@ -97,6 +114,24 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                         value={artStyle}
                         options={[...ART_STYLES.map((style) => ({ value: style.id, label: style.label })), { value: CUSTOM_ART_STYLE_ID, label: "自定义" }]}
                         onChange={(value) => setArtStyle(value)}
+                    />
+                    <Button
+                        icon={<Mic className="size-4" />}
+                        loading={voiceBusyIds.narrator}
+                        onClick={() => document.getElementById(`voice-ref-narrator-${project.id}`)?.click()}
+                    >
+                        {project.narratorVoiceRef ? "更换旁白音色" : "旁白音色参考"}
+                    </Button>
+                    <input
+                        id={`voice-ref-narrator-${project.id}`}
+                        type="file"
+                        accept="audio/*"
+                        className="hidden"
+                        onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            event.target.value = "";
+                            if (file) void uploadVoiceRef("narrator", file, (media) => updateProject(project.id, { narratorVoiceRef: media }));
+                        }}
                     />
                     <Button icon={<Plus className="size-4" />} onClick={() => updateProject(project.id, { characters: [...project.characters, { id: nanoid(), name: `角色 ${project.characters.length + 1}`, description: "", candidates: [], views: {} }] })}>
                         添加角色
@@ -146,6 +181,24 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                                 >
                                     生成立绘
                                 </Button>
+                                <Button
+                                    icon={<Mic className="size-4" />}
+                                    loading={voiceBusyIds[character.id]}
+                                    onClick={() => document.getElementById(`voice-ref-${character.id}`)?.click()}
+                                >
+                                    {character.voiceRef ? "更换音色" : "音色参考"}
+                                </Button>
+                                <input
+                                    id={`voice-ref-${character.id}`}
+                                    type="file"
+                                    accept="audio/*"
+                                    className="hidden"
+                                    onChange={(event) => {
+                                        const file = event.target.files?.[0];
+                                        event.target.value = "";
+                                        if (file) void uploadVoiceRef(character.id, file, (media) => patchCharacter(character.id, { voiceRef: media }));
+                                    }}
+                                />
                                 <Button
                                     icon={<Library className="size-4" />}
                                     disabled={!Object.keys(character.views).length}

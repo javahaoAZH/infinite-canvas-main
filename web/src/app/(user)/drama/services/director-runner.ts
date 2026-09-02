@@ -63,8 +63,10 @@ async function directorLoop(projectId: string) {
         for (const task of current.tasks) {
             if (task.status !== "pending") continue;
             if ((cooldownUntil[task.id] || 0) > Date.now()) continue;
-            // 依赖就绪：全部成功，或依赖被跳过且为软依赖可降级执行
-            const ready = task.deps.every((depId) => statusById.get(depId) === "success" || (statusById.get(depId) === "skipped" && !task.hardDep));
+            // 依赖就绪：全部成功，或依赖被跳过且为软依赖可降级执行；弱依赖（对白镜配音）只等执行到达终态，成败均放行（A2）
+            const ready =
+                task.deps.every((depId) => statusById.get(depId) === "success" || (statusById.get(depId) === "skipped" && !task.hardDep)) &&
+                (task.softDeps || []).every((depId) => statusById.get(depId) === "success" || statusById.get(depId) === "skipped" || statusById.get(depId) === "failed");
             if (!ready) continue;
             const runningCount = current.tasks.filter((item) => item.kind === task.kind && item.status === "running").length + (dispatched.get(task.kind) || 0);
             if (runningCount >= CONCURRENCY_CAP[task.kind]) continue;

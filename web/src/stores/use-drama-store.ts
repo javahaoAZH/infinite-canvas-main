@@ -28,6 +28,10 @@ export type DramaShot = {
     dialogue: string;
     // 可选旁白画外音（VO），旧数据可能缺失
     narration?: string;
+    // 可选镜头语言字段（旧数据可能缺失）：景别 / 运镜 / 转场，参与分镜图与视频提示词拼接（A4）
+    shotSize?: string;
+    camera?: string;
+    transition?: string;
     seconds: number;
 };
 
@@ -38,6 +42,8 @@ export type DramaCharacter = {
     candidates: DramaMedia[];
     views: Partial<Record<CharacterViewKind, DramaMedia>>;
     assetId?: string;
+    // 配音音色参考音频（IndexTTS2 音色克隆用），需公网可访问地址
+    voiceRef?: DramaMedia;
 };
 
 export type DramaProject = {
@@ -52,6 +58,8 @@ export type DramaProject = {
     shotImages: Record<string, DramaMedia>;
     shotVideos: Record<string, DramaMedia>;
     shotAudios: Record<string, DramaMedia>;
+    // 旁白默认音色参考音频（对白优先用出场角色自己的音色参考）
+    narratorVoiceRef?: DramaMedia;
     // 关联的生产线画布项目（实时同步用）；首次同步时创建并回填
     canvasProjectId?: string;
 };
@@ -128,7 +136,7 @@ async function hydrateProject(project: DramaProject): Promise<DramaProject> {
             const viewEntries = await Promise.all(
                 Object.entries(character.views).map(async ([viewKey, media]) => [viewKey, await resolveMedia(media as DramaMedia, "image")] as const),
             );
-            return { ...character, candidates, views: Object.fromEntries(viewEntries) };
+            return { ...character, candidates, views: Object.fromEntries(viewEntries), ...(character.voiceRef ? { voiceRef: await resolveMedia(character.voiceRef, "media") } : {}) };
         }),
     );
     return {
@@ -138,6 +146,7 @@ async function hydrateProject(project: DramaProject): Promise<DramaProject> {
         shotImages: Object.fromEntries(shotImages),
         shotVideos: Object.fromEntries(shotVideos),
         shotAudios: Object.fromEntries(shotAudios),
+        ...(project.narratorVoiceRef ? { narratorVoiceRef: await resolveMedia(project.narratorVoiceRef, "media") } : {}),
     };
 }
 

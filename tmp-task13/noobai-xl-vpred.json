@@ -1,0 +1,110 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "NoobAI-XL-Vpred-v1.0.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "ModelSamplingDiscrete",
+    "inputs": {
+      "sampling": "v_prediction",
+      "zsnr": true,
+      "model": [
+        "1",
+        0
+      ]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Positive"
+    },
+    "inputs": {
+      "text": "masterpiece, best quality, a cute orange cat sitting on a windowsill, detailed fur",
+      "clip": [
+        "1",
+        1
+      ]
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Negative"
+    },
+    "inputs": {
+      "text": "lowres, bad anatomy, bad hands, extra digits, blurry, watermark, username, worst quality, low quality",
+      "clip": [
+        "1",
+        1
+      ]
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "6": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 7,
+      "control_after_generate": "randomize",
+      "steps": 26,
+      "cfg": 6.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": [
+        "2",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    }
+  },
+  "20": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "sdxl.vae.safetensors"
+    }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "6",
+        0
+      ],
+      "vae": [
+        "20",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "7",
+        0
+      ],
+      "filename_prefix": "c2a_noobai"
+    }
+  }
+}

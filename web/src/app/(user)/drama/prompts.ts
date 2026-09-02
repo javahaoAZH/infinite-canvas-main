@@ -321,6 +321,13 @@ export function resolveArtStyleLabel(artStyleId: string): string {
 
 export type ShotFrameKind = "narrative" | "dialogue" | "action";
 
+// 镜头语言词表（A4）：分镜可选字段 shotSize / camera / transition 的合法取值，同步进 drama_get_skills 供外部大脑对齐；
+// 字段不填时提示词退化为原有泛化措辞，不做枚举外校验（自由描述同样允许）
+export const SHOT_SIZE_OPTIONS = ["远景", "全景", "中景", "中近景", "近景", "特写"];
+export const CAMERA_MOVE_OPTIONS = ["固定镜头", "推镜头", "拉镜头", "横移", "环绕", "手持跟拍", "升/降"];
+export const TRANSITION_OPTIONS = ["硬切", "叠化", "匹配剪辑", "白闪", "黑场"];
+export type ShotLanguage = { shotSize?: string; camera?: string; transition?: string };
+
 // 镜头级可读性约束词表（按帧型）：只写该帧型最常见的真实可读性风险，不堆万能排除清单
 export const FRAME_LEXICON: Record<ShotFrameKind, string[]> = {
     narrative: ["视觉重点清楚，不被氛围层遮挡，前中后景层级分明", "身份锚点清晰可辨，不被氛围层吞没"],
@@ -348,39 +355,52 @@ export function buildCharacterImagePrompt(description: string, artStylePromptBas
     ].join("，");
 }
 
-// 分镜图提示词：主体与身份锚点（含出场角色锚点）→ 构图视角 → 光色与材质 → 背景边界 → 风格基底 → 帧型可读性约束 → 场景氛围与排除 → 普适禁止项
+// 分镜图提示词：主体与身份锚点（含出场角色锚点）→ 景别构图 → 光色与材质 → 背景边界 → 风格基底 → 一致性约束 → 帧型可读性约束 → 场景氛围与排除 → 普适禁止项（A4）
 export function buildShotImagePrompt(
     shotDescription: string,
     artStylePromptBase: string,
     frameKind: ShotFrameKind = "narrative",
     scenePreset?: DramaScenePreset | null,
     characterAnchors?: string[],
+    shotLanguage?: ShotLanguage,
 ): string {
     const style = artStylePromptBase.trim();
+    const shotSize = (shotLanguage?.shotSize || "").trim();
     return [
         shotDescription.trim(),
         "画面主体突出，身份特征清晰可辨",
         ...(characterAnchors?.length ? [`出场角色：${characterAnchors.join("；")}`] : []),
-        "构图与视角贴合本镜情绪",
+        ...(shotSize ? [`${shotSize}景别，构图与视角贴合本镜情绪`] : ["构图与视角贴合本镜情绪"]),
         "光源方向明确，材质区分清晰",
         "画框内只呈现描述中出现的人和物，背景边界清楚",
         ...(style ? [style] : []),
+        "出场角色的五官、发型与服饰配色与本剧其他镜头完全一致，只允许姿态与视角变化",
         ...FRAME_LEXICON[frameKind],
         ...(scenePreset ? [scenePreset.atmosphere, scenePreset.excludes] : []),
         "画面无文字，无水印",
     ].join("，");
 }
 
-// 图生视频提示词：静态锚点 → 触发 → 主体动作 → 次级反应 → 时长约束 → 运镜 → 终点的因果链；
-// 运镜不与人物动作争夺注意力；一条提示词只表达一个主导戏剧变化；不写“保持不变”类无效指令
-export function buildShotVideoPrompt(shotDescription: string, artStylePromptBase: string, seconds?: number, scenePreset?: DramaScenePreset | null): string {
+// 图生视频提示词：静态锚点 → 触发 → 主体动作 → 次级反应 → 时长约束 → 运镜（指定时直写，否则泛化）→ 画质词 → 终点的因果链；
+// 运镜不与人物动作争夺注意力；一条提示词只表达一个主导戏剧变化；不写“保持不变”类无效指令（A4）
+export function buildShotVideoPrompt(
+    shotDescription: string,
+    artStylePromptBase: string,
+    seconds?: number,
+    scenePreset?: DramaScenePreset | null,
+    shotLanguage?: ShotLanguage,
+): string {
     const style = artStylePromptBase.trim();
+    const camera = (shotLanguage?.camera || "").trim();
+    const transition = (shotLanguage?.transition || "").trim();
     return [
         `以当前画面为静态起点，${shotDescription.trim()}`,
         "画面先保持起始状态，由画面内可见的事件触发后才开始动作",
         "主体动作与次级反应按因果先后衔接，不并列罗列",
         ...(seconds ? [`在${seconds}秒内完成全部动作，节奏匹配时长`] : []),
-        "运镜要有动机，不与人物动作争夺注意力",
+        ...(camera ? [`运镜为${camera}，轨迹平稳有动机，不与人物动作争夺注意力`] : ["运镜要有动机，不与人物动作争夺注意力"]),
+        ...(transition ? [`结束方式：${transition}衔接下一镜`] : []),
+        "画面锐利无拖影，动作帧不糊不闪，光色与色调全程连续统一",
         "结尾停在明确可确认的画面状态，与描述终点一致",
         ...(style ? [style] : []),
         ...(scenePreset ? [scenePreset.atmosphere] : []),
@@ -422,7 +442,8 @@ export const DRAMA_SHOT_RULES =
     "二、一镜一职责，每镜只承担一个主要功能、只有一个主导戏剧变化，每次切镜必须带来信息、权力、情绪、空间或节奏之一的变化；" +
     "三、对白即行动，每句对白有戏剧目的，不让角色向观众朗读剧情资料；每场至少改变信息、权力、关系、情绪或风险之一，场尾留悬念；" +
     "四、每镜时长 seconds 取 1-30 秒；开场镜比工作景别宽一档，地理信息通过人物动作在画面内部交代，不用空镜全景开场；" +
-    "五、相邻两镜画面描述不得完全相同；对白与旁白可为空字符串，旁白（画外音）不重复对白与画面已呈现的内容。";
+    "五、相邻两镜画面描述不得完全相同；对白与旁白可为空字符串，旁白（画外音）不重复对白与画面已呈现的内容；" +
+    "六、爆款节奏：第一镜必须开篇爆点（冲突/悬念/反差直接开场，不做背景铺垫）；每场最后一镜留悬念钩子（新威胁/反转/未解问题）；避免连续三镜以上同景别，用景别与转场变化控制节奏。";
 
 export const DRAMA_CHARACTER_RULES =
     "角色描述规范：只写可观察的外貌特征——发型、发色、五官与体型、服饰件数与材质、标志物等身份锚点，要求可见、可生成、可比较，直接作为立绘提示词基底；" +
@@ -433,6 +454,9 @@ export const DRAMA_SKILL_CATALOG = {
     scenes: SCENE_PRESETS,
     artStyles: ART_STYLES,
     frameLexicon: FRAME_LEXICON,
+    shotSizes: SHOT_SIZE_OPTIONS,
+    cameraMoves: CAMERA_MOVE_OPTIONS,
+    transitions: TRANSITION_OPTIONS,
     shotRules: DRAMA_SHOT_RULES,
     characterRules: DRAMA_CHARACTER_RULES,
 };
