@@ -19,6 +19,7 @@ import {
     useDramaStore,
     type DramaCharacter,
     type DramaMedia,
+    type DramaShot,
 } from "@/stores/use-drama-store";
 import { normalizeLocalChannels, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -67,7 +68,22 @@ export async function structureScript(projectId: string, effectiveConfig: AiConf
     const content = await callTextModel(buildScriptSystemPrompt(genre), script, effectiveConfig);
     const structured = parseStructuredScript(content);
     const characters = mergeCharacters(project.characters, structured.characters || []);
-    const shots = structured.shots!.map((shot) => newDramaShot({ description: shot.description!, dialogue: shot.dialogue || "", narration: shot.narration || "", seconds: shot.seconds }));
+    const shots = structured.shots!.map((shot) =>
+        newDramaShot({
+            description: shot.description!,
+            dialogue: shot.dialogue || "",
+            narration: shot.narration || "",
+            seconds: shot.seconds,
+            ...(shot.shotSize ? { shotSize: shot.shotSize } : {}),
+            ...(shot.camera ? { camera: shot.camera } : {}),
+            ...(shot.transition ? { transition: shot.transition } : {}),
+            ...(shot.action ? { action: shot.action } : {}),
+            ...(shot.emotion ? { emotion: shot.emotion } : {}),
+            ...(shot.imagePrompt ? { imagePrompt: shot.imagePrompt } : {}),
+            ...(shot.videoPrompt ? { videoPrompt: shot.videoPrompt } : {}),
+            ...(Array.isArray(shot.characters) ? { characters: shot.characters } : {}),
+        }),
+    );
     useDramaStore.getState().updateProject(projectId, {
         shots,
         characters,
@@ -84,7 +100,20 @@ export async function structureScript(projectId: string, effectiveConfig: AiConf
 export type StructuredScriptInput = {
     title?: string;
     characters?: Array<{ name?: string; description?: string }>;
-    shots: Array<{ description?: string; dialogue?: string; narration?: string; seconds?: number; shotSize?: string; camera?: string; transition?: string }>;
+    shots: Array<{
+        description?: string;
+        dialogue?: string;
+        narration?: string;
+        seconds?: number;
+        shotSize?: string;
+        camera?: string;
+        transition?: string;
+        action?: string;
+        emotion?: string;
+        characters?: string[];
+        imagePrompt?: string;
+        videoPrompt?: string;
+    }>;
 };
 
 export function applyStructuredScript(projectId: string, structured: StructuredScriptInput): { shotCount: number; characterCount: number } {
@@ -98,10 +127,16 @@ export function applyStructuredScript(projectId: string, structured: StructuredS
             dialogue: (shot.dialogue || "").trim(),
             narration: (shot.narration || "").trim(),
             seconds: clampShotSeconds(shot.seconds),
-            // 可选镜头语言字段（A4）：空串视为未指定，不写入存储
+            // 可选镜头语言字段（A4）与导演字段：空串视为未指定，不写入存储
             ...(shot.shotSize?.trim() ? { shotSize: shot.shotSize.trim() } : {}),
             ...(shot.camera?.trim() ? { camera: shot.camera.trim() } : {}),
             ...(shot.transition?.trim() ? { transition: shot.transition.trim() } : {}),
+            ...(shot.action?.trim() ? { action: shot.action.trim() } : {}),
+            ...(shot.emotion?.trim() ? { emotion: shot.emotion.trim() } : {}),
+            ...(shot.imagePrompt?.trim() ? { imagePrompt: shot.imagePrompt.trim() } : {}),
+            ...(shot.videoPrompt?.trim() ? { videoPrompt: shot.videoPrompt.trim() } : {}),
+            // 出场角色：显式传数组就原样存（**空数组＝本镜明确无人**，不能丢），未传则不写入、保留描述匹配兜底
+            ...(Array.isArray(shot.characters) ? { characters: shot.characters.map((name) => String(name).trim()).filter(Boolean) } : {}),
         }),
     );
     useDramaStore.getState().updateProject(projectId, {
@@ -117,7 +152,21 @@ export function applyStructuredScript(projectId: string, structured: StructuredS
 
 // 按分镜 id 部分更新（审查检测 → 修复 → 回写闭环用）：只覆盖传入字段，秒数钳 1-30；
 // 不动未提及分镜、不清空三张媒体表、保留已有媒体关联；id 不存在时报错列出无效 id
-export type DramaShotPatch = { id: string; description?: string; dialogue?: string; narration?: string; seconds?: number; shotSize?: string; camera?: string; transition?: string };
+export type DramaShotPatch = {
+    id: string;
+    description?: string;
+    dialogue?: string;
+    narration?: string;
+    seconds?: number;
+    shotSize?: string;
+    camera?: string;
+    transition?: string;
+    action?: string;
+    emotion?: string;
+    characters?: string[];
+    imagePrompt?: string;
+    videoPrompt?: string;
+};
 
 export function updateDramaShots(projectId: string, patches: DramaShotPatch[]): { shotCount: number } {
     const project = findProject(projectId);
@@ -138,10 +187,29 @@ export function updateDramaShots(projectId: string, patches: DramaShotPatch[]): 
             ...(typeof patch.shotSize === "string" ? { shotSize: patch.shotSize.trim() || undefined } : {}),
             ...(typeof patch.camera === "string" ? { camera: patch.camera.trim() || undefined } : {}),
             ...(typeof patch.transition === "string" ? { transition: patch.transition.trim() || undefined } : {}),
+            ...(typeof patch.action === "string" ? { action: patch.action.trim() || undefined } : {}),
+            ...(typeof patch.emotion === "string" ? { emotion: patch.emotion.trim() || undefined } : {}),
+            ...(typeof patch.imagePrompt === "string" ? { imagePrompt: patch.imagePrompt.trim() || undefined } : {}),
+            ...(typeof patch.videoPrompt === "string" ? { videoPrompt: patch.videoPrompt.trim() || undefined } : {}),
+            ...(Array.isArray(patch.characters) ? { characters: patch.characters.map((name) => String(name).trim()).filter(Boolean) } : {}),
         };
     });
     useDramaStore.getState().updateProject(projectId, { shots });
     return { shotCount: shots.length };
+}
+
+// 本镜出场角色解析（分镜图与图生视频共用）：分镜表**显式声明**的 characters 为准，
+// 空数组＝本镜明确无人，不得兜底塞角色——否则空镜会被角色锚点与立绘参考图带偏、凭空长出人；
+// 未声明时回落到描述命中角色名，都无命中再取前 2 个有描述的角色
+function resolveShotCharacters(shot: DramaShot, projectCharacters: DramaCharacter[]): DramaCharacter[] {
+    const described = projectCharacters.filter((character) => character.description.trim());
+    if (Array.isArray(shot.characters)) {
+        return shot.characters
+            .map((name) => described.find((character) => character.name === String(name).trim()))
+            .filter((character): character is DramaCharacter => Boolean(character));
+    }
+    const matched = described.filter((character) => character.name.trim() && shot.description.includes(character.name.trim())).slice(0, 3);
+    return matched.length ? matched : described.slice(0, 2);
 }
 
 // 分镜秒数钳 1-30（非法/缺失回退 5），applyStructuredScript 与 updateDramaShots 共用
@@ -240,14 +308,11 @@ export async function generateShotImage(projectId: string, shotId: string, effec
         const config = dramaImageConfig(effectiveConfig);
         assertImageChannel(config);
         const state = useDramaStore.getState();
-        const projectCharacters = state.projects.find((item) => item.id === projectId)?.characters || [];
-        const references = collectCharacterReferences(projectCharacters);
-        // 有角色但没有任何角色分配立绘视图时参考图为空，生成的人物可能不一致，提前报错引导去角色步骤分配；无角色项目不受影响（A3）
-        if (projectCharacters.length && !references.length) throw new Error("请先在角色步骤为角色分配立绘视图，否则生成的人物可能不一致");
-        // 本镜出场角色锚点：描述中命中角色名的优先，无命中取前 2 个有描述的角色，各取描述前 60 字
-        const characters = projectCharacters.filter((character) => character.description.trim());
-        const matched = characters.filter((character) => character.name.trim() && shot.description.includes(character.name.trim())).slice(0, 3);
-        const anchors = (matched.length ? matched : characters.slice(0, 2)).map((character) => `${character.name}：${character.description.slice(0, 60)}`);
+        // 先定本镜出场角色，再据此决定参考图与是否要求立绘：纯空镜不带角色参考图（走纯文生图，避免图生图被人物带偏），也不要求先分配立绘
+        const shotCharacters = resolveShotCharacters(shot, state.projects.find((item) => item.id === projectId)?.characters || []);
+        const references = collectCharacterReferences(shotCharacters);
+        if (shotCharacters.length && !references.length) throw new Error("请先在角色步骤为角色分配立绘视图，否则生成的人物可能不一致");
+        const anchors = shotCharacters.map((character) => `${character.name}：${character.description.slice(0, 60)}`);
         const prompt = buildShotImagePrompt(shot.description, resolveArtStyleBase(state.artStyle, state.customArtStyle), classifyShotFrame(shot), resolveScenePreset(useDramaStore.getState().scene), anchors, shot);
         // 分工：无参考纯文生图走 noobai 系；有参考图时 noobai 系工作流无 LoadImage 不支持图生图，强制改用 qwen-image-edit
         const shotConfig = references.length
@@ -310,8 +375,11 @@ export async function generateShotVideo(projectId: string, shotId: string, effec
             useDramaStore.getState().clearFailedMedia(busyKey);
             return;
         }
-        // 参考数组：分镜图保持第一位作首帧，追加项目角色立绘参考保障人物一致性（A2）；本地算力流水线只会消费第一张（见 video.ts）
-        const references = [toReferenceImage(shotImage, "分镜图"), ...collectCharacterReferences(findProject(projectId)?.characters || [])];
+        // 参考数组：分镜图保持第一位作首帧，只追加**本镜出场角色**的立绘参考保障人物一致性（纯空镜不追加，避免被人物带偏）；本地算力流水线只会消费第一张（见 video.ts）
+        const references = [
+            toReferenceImage(shotImage, "分镜图"),
+            ...collectCharacterReferences(resolveShotCharacters(shot, findProject(projectId)?.characters || [])),
+        ];
         // ComfyUI 渠道非对白镜固定多图参考工作流（默认视频模型下拉已不含对口型工作流，双保险防误配）
         const videoConfig = isComfyUIWorkflowConfig(config, config.model) ? { ...config, model: COMFYUI_WORKFLOW_MULTI_REF_VIDEO } : config;
         const result = await requestVideoGeneration(videoConfig, prompt, references, (progress) => onProgress?.(progress));

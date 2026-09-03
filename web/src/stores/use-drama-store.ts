@@ -32,6 +32,13 @@ export type DramaShot = {
     shotSize?: string;
     camera?: string;
     transition?: string;
+    // 可选导演字段（制作分镜表标准，旧数据可能缺失）：动作与情绪进提示词，出场角色用于精确锚点注入，
+    // 出图/图生视频提示词非空时覆盖提示词的内容段（画风基底与一致性约束仍由项目级统一拼接）
+    action?: string;
+    emotion?: string;
+    characters?: string[];
+    imagePrompt?: string;
+    videoPrompt?: string;
     seconds: number;
 };
 
@@ -62,6 +69,8 @@ export type DramaProject = {
     narratorVoiceRef?: DramaMedia;
     // 关联的生产线画布项目（实时同步用）；首次同步时创建并回填
     canvasProjectId?: string;
+    // 绑定的资产清单项目文件夹名（D 盘项目文件夹/资产清单.json）；缺省用项目标题
+    assetProject?: string;
 };
 
 type DramaStore = {

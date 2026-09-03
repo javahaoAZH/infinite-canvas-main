@@ -15,12 +15,14 @@ export const SCRIPT_STRUCTURE_SYSTEM_PROMPT =
     "你是漫剧分镜编剧助手。用户会给你一段剧本文本，你需要把它结构化为漫剧分镜数据。内容质量规则：" +
     "一、对白即行动：每句对白都要有戏剧目的（争取、回避、试探、逼迫或重新定义关系），禁止让角色把剧情资料读给观众听。" +
     "二、每场必须至少改变一项：信息、权力、关系、情绪、物理状态或风险；没有变化的场次并入相邻场；每场结尾留下悬念或未决事项，把压力传给下一场。" +
-    "三、分镜规则：一镜只承担一个职责，每次切镜必须带来信息、权力、情绪、空间或节奏之一的变化；开场镜比工作景别宽一档，第二镜落到人物工作景别；地理信息通过人物动作在画面内部交代，不用空镜全景开场；每镜描述只写镜头起点时刻可见的人物、道具与状态。" +
+    "三、分镜规则：一镜只承担一个职责，每次切镜必须带来信息、权力、情绪、空间或节奏之一的变化；开场镜比工作景别宽一档，第二镜落到人物工作景别；地理信息通过人物动作在画面内部交代，不用空镜全景开场；每镜 description 和 imagePrompt 只写镜头起点时刻可见的人物、道具与状态。" +
     "四、角色规则：为每个角色写身份锚点，即可见、可生成、可比较的具体事实（发型、发色、服饰件数与材质、标志物），不使用“气质出众”这类空泛词。" +
     "五、对白手艺：先定这句话想对对方做什么再写字面表达；潜台词来自不能或不愿直说的理由，并给观众留下可推断的线索；背景信息通过争夺、交换、回避进入冲突，不让角色一口气复述彼此都知道的事实；停顿与打断要有对象和后果，不做节奏填充；不同角色的语言用目标、证明方式与压力下的变化区分，不靠口头禅。" +
     "六、旁白规则：narration 是可选的画外音（VO），用于内心独白、时间过渡或画面无法呈现的信息；没有旁白就写空字符串；旁白不重复对白与画面已呈现的内容。" +
+    "七、首帧规则：imagePrompt 按“主体身份、场景锚点、静止姿态、景别机位、构图、光线色彩”的顺序写成正向可见描述；只选一个明确瞬间，不写缓缓、逐渐、随后、一闪而过等过程，不写运镜、转场、对白、声音、心理和负面排除词。" +
+    "八、动作规则：action 只写本镜唯一主导动作，videoPrompt 只写主体运动、环境运动、运镜和节奏，不重复首帧已有的外貌、场景、光线与画风。characters 必须显式列出本镜人物，空镜写空数组。" +
     "严格按以下 JSON 格式输出，不要输出任何其他文字、注释或代码块标记：" +
-    "{\"title\":\"作品标题\",\"characters\":[{\"name\":\"角色名\",\"description\":\"角色外貌与服装描述，用于生成立绘\"}],\"shots\":[{\"description\":\"画面描述（场景、人物动作、构图），用于生成分镜图\",\"dialogue\":\"该分镜的对白，没有则为空字符串\",\"narration\":\"该分镜的旁白画外音，没有则为空字符串\",\"seconds\":5}]}";
+    "{\"title\":\"作品标题\",\"characters\":[{\"name\":\"角色名\",\"description\":\"角色外貌、服装、材质与标志物的正向可见描述\"}],\"shots\":[{\"description\":\"镜头起点的可见物理事实\",\"dialogue\":\"对白，没有则为空字符串\",\"narration\":\"旁白，没有则为空字符串\",\"seconds\":5,\"shotSize\":\"景别\",\"camera\":\"运镜\",\"transition\":\"转场\",\"action\":\"唯一主导动作\",\"emotion\":\"情绪\",\"characters\":[\"出场角色名\"],\"imagePrompt\":\"静态首帧正向提示词\",\"videoPrompt\":\"图生视频运动提示词\"}]}";
 
 export type DramaGenreCard = { id: string; label: string; points: string[] };
 
@@ -326,21 +328,41 @@ export type ShotFrameKind = "narrative" | "dialogue" | "action";
 export const SHOT_SIZE_OPTIONS = ["远景", "全景", "中景", "中近景", "近景", "特写"];
 export const CAMERA_MOVE_OPTIONS = ["固定镜头", "推镜头", "拉镜头", "横移", "环绕", "手持跟拍", "升/降"];
 export const TRANSITION_OPTIONS = ["硬切", "叠化", "匹配剪辑", "白闪", "黑场"];
-export type ShotLanguage = { shotSize?: string; camera?: string; transition?: string };
+export type ShotLanguage = {
+    shotSize?: string;
+    camera?: string;
+    transition?: string;
+    // 导演字段（制作分镜表标准）：调用方直接传分镜对象即可，无需改参数列表
+    action?: string;
+    emotion?: string;
+    imagePrompt?: string;
+    videoPrompt?: string;
+};
+
+// 提示词内容段：表内写了出图/图生视频提示词就用它（行业口径：分镜表是生成环节的数据源），
+// 否则回落为「画面描述＋动作」；两条路径都把小说心理外化后的可见动作带进画面
+function imagePromptContent(explicit: string | undefined, description: string): string {
+    return (explicit || "").trim() || description.trim();
+}
+
+function videoPromptContent(explicit: string | undefined, description: string, action: string | undefined): string {
+    const own = (explicit || "").trim().replace(/^以[^，,。]+为静态起点[，,。]?\s*/, "");
+    return own || (action || "").trim() || description.trim();
+}
 
 // 镜头级可读性约束词表（按帧型）：只写该帧型最常见的真实可读性风险，不堆万能排除清单
 export const FRAME_LEXICON: Record<ShotFrameKind, string[]> = {
-    narrative: ["视觉重点清楚，不被氛围层遮挡，前中后景层级分明", "身份锚点清晰可辨，不被氛围层吞没"],
-    dialogue: ["面部识别点与目光可辨，背景不争夺注意中心", "关键手势与持物不被画框裁掉"],
-    action: ["特效起点与受力点可辨，人物轮廓与特效层次分离", "粒子与碎片不遮挡身份锚点"],
+    narrative: ["单一视觉焦点清晰，前中后景层级分明", "主体身份锚点位于清晰焦平面，氛围层位于主体之后"],
+    dialogue: ["面部识别点与目光方向清晰，背景保持低对比度", "关键手势与持物完整位于安全画幅内"],
+    action: ["特效起点与受力点清晰，人物轮廓与特效层次分离", "粒子与碎片分布在主体轮廓外侧"],
 };
 
-// 帧型粗分（不改剧本 JSON schema）：有对白 = 对话镜头；含动作/特效关键词 = 动作帧；其余 = 叙事帧
+// 帧型粗分（不改剧本 JSON schema）：有对白 = 对话镜头；描述或动作含动作/特效关键词 = 动作帧；其余 = 叙事帧
 const ACTION_FRAME_KEYWORDS = /打|击|追|逃|爆|炸|冲|扑|挥|劈|刺|施法|斗|拳|踢|撞|剑气|光刃|火焰|枪|碎|跳|翻滚|闪避|冲击|波|斩|奔/;
 
-export function classifyShotFrame(shot: { description?: string; dialogue?: string }): ShotFrameKind {
+export function classifyShotFrame(shot: { description?: string; dialogue?: string; action?: string }): ShotFrameKind {
     if ((shot.dialogue || "").trim()) return "dialogue";
-    if (ACTION_FRAME_KEYWORDS.test(shot.description || "")) return "action";
+    if (ACTION_FRAME_KEYWORDS.test(`${shot.description || ""} ${shot.action || ""}`)) return "action";
     return "narrative";
 }
 
@@ -355,7 +377,8 @@ export function buildCharacterImagePrompt(description: string, artStylePromptBas
     ].join("，");
 }
 
-// 分镜图提示词：主体与身份锚点（含出场角色锚点）→ 景别构图 → 光色与材质 → 背景边界 → 风格基底 → 一致性约束 → 帧型可读性约束 → 场景氛围与排除 → 普适禁止项（A4）
+// 分镜图提示词：静态首帧 → 角色参考锚点 → 景别机位与构图 → 光色材质 → 风格与场景基底；
+// 动作、转场与负面排除项不进入首帧主提示词，避免不同模型反向理解或争夺画面焦点
 export function buildShotImagePrompt(
     shotDescription: string,
     artStylePromptBase: string,
@@ -367,17 +390,15 @@ export function buildShotImagePrompt(
     const style = artStylePromptBase.trim();
     const shotSize = (shotLanguage?.shotSize || "").trim();
     return [
-        shotDescription.trim(),
-        "画面主体突出，身份特征清晰可辨",
+        imagePromptContent(shotLanguage?.imagePrompt, shotDescription),
+        "主次关系清晰，主要视觉焦点与身份特征清晰可辨",
         ...(characterAnchors?.length ? [`出场角色：${characterAnchors.join("；")}`] : []),
-        ...(shotSize ? [`${shotSize}景别，构图与视角贴合本镜情绪`] : ["构图与视角贴合本镜情绪"]),
+        ...(shotSize ? [`${shotSize}景别，机位、视角与构图明确`] : ["机位、视角与构图明确"]),
         "光源方向明确，材质区分清晰",
-        "画框内只呈现描述中出现的人和物，背景边界清楚",
         ...(style ? [style] : []),
-        "出场角色的五官、发型与服饰配色与本剧其他镜头完全一致，只允许姿态与视角变化",
+        ...(characterAnchors?.length ? ["角色外观以已绑定参考图为准，五官、发型、服饰与配色连续一致"] : []),
         ...FRAME_LEXICON[frameKind],
-        ...(scenePreset ? [scenePreset.atmosphere, scenePreset.excludes] : []),
-        "画面无文字，无水印",
+        ...(scenePreset ? [scenePreset.atmosphere] : []),
     ].join("，");
 }
 
@@ -385,25 +406,21 @@ export function buildShotImagePrompt(
 // 运镜不与人物动作争夺注意力；一条提示词只表达一个主导戏剧变化；不写“保持不变”类无效指令（A4）
 export function buildShotVideoPrompt(
     shotDescription: string,
-    artStylePromptBase: string,
+    _artStylePromptBase: string,
     seconds?: number,
-    scenePreset?: DramaScenePreset | null,
+    _scenePreset?: DramaScenePreset | null,
     shotLanguage?: ShotLanguage,
 ): string {
-    const style = artStylePromptBase.trim();
     const camera = (shotLanguage?.camera || "").trim();
-    const transition = (shotLanguage?.transition || "").trim();
+    const emotion = (shotLanguage?.emotion || "").trim();
     return [
-        `以当前画面为静态起点，${shotDescription.trim()}`,
-        "画面先保持起始状态，由画面内可见的事件触发后才开始动作",
+        videoPromptContent(shotLanguage?.videoPrompt, shotDescription, shotLanguage?.action),
         "主体动作与次级反应按因果先后衔接，不并列罗列",
+        ...(emotion ? [`动作幅度与节奏匹配${emotion}的情绪强度`] : []),
         ...(seconds ? [`在${seconds}秒内完成全部动作，节奏匹配时长`] : []),
         ...(camera ? [`运镜为${camera}，轨迹平稳有动机，不与人物动作争夺注意力`] : ["运镜要有动机，不与人物动作争夺注意力"]),
-        ...(transition ? [`结束方式：${transition}衔接下一镜`] : []),
         "画面锐利无拖影，动作帧不糊不闪，光色与色调全程连续统一",
         "结尾停在明确可确认的画面状态，与描述终点一致",
-        ...(style ? [style] : []),
-        ...(scenePreset ? [scenePreset.atmosphere] : []),
     ].join("，");
 }
 
@@ -411,7 +428,7 @@ export function buildShotVideoPrompt(
 // 审查清单提炼自本项目剧本规则；每条结论必须引用原文短句作证据；固定三档结论，不做数字打分
 export const SHOTS_REVIEW_SYSTEM_PROMPT =
     "你是漫剧分镜的独立评审员，没有参与当前版本的创作，只依据用户提供的文本客观评估，不偏袒、不迁就既有写法。" +
-    "审查清单：一对白即行动，每句对白有戏剧目的，没有角色向观众朗读剧情资料；二每场至少改变信息、权力、关系、情绪或风险之一，场尾留下悬念；三一镜一职责，每镜只承担一个主要功能、只有一个主导戏剧变化；四角色身份锚点可见、可生成、可比较，没有空泛词；五画面描述只写镜头起点时刻可见的物理事实（人物、道具与状态），不含心理活动、过程性叙述与不可生成的抽象描述。" +
+    "审查清单：一对白即行动，每句对白有戏剧目的，没有角色向观众朗读剧情资料；二每场至少改变信息、权力、关系、情绪或风险之一，场尾留下悬念；三一镜一职责，每镜只承担一个主要功能、只有一个主导戏剧变化；四角色身份锚点可见、可生成、可比较，没有空泛词；五 description 与 imagePrompt 只写镜头起点可见的物理事实，imagePrompt 应包含主体、场景锚点、静止姿态、景别机位、构图和光线色彩，不含过程、运镜、转场、声音、心理、作品名模仿与负面排除词；六 action 与 videoPrompt 只写动作及其因果顺序，不重复首帧外貌、场景、光线和画风；七 characters 必须准确列出本镜人物，空镜为明确空数组。" +
     "每条结论必须引用原文短句作为证据，没有证据不下结论；只指出文本中真实存在的问题，不追加清单之外的要求。" +
     "严格按以下 JSON 输出，不要输出任何其他文字、注释或代码块标记：" +
     "{\"verdict\":\"pass 或 revise 或 rework\",\"findings\":[{\"severity\":\"blocker 或 major 或 minor 或 note\",\"location\":\"镜号或角色名\",\"evidence\":\"原文短引文\",\"impact\":\"影响\",\"suggestion\":\"修订建议\"}]}" +
@@ -420,9 +437,9 @@ export const SHOTS_REVIEW_SYSTEM_PROMPT =
 // 分镜 AI 自动修改系统提示词：按审查 findings 的建议逐镜修改，保持镜头数量与顺序不变，严格输出与输入等长的 JSON
 export const SHOTS_AUTOFIX_SYSTEM_PROMPT =
     "你是漫剧分镜的修改助手。用户会给你当前分镜 JSON 与审查结论（每条结论包含位置、证据与修订建议）。修改规则：" +
-    "一、按每条结论的建议修改对应镜头；二、保持镜头数量与顺序完全不变；三、不修改结论未涉及的镜头；四、角色名与原文保持一致；五、画面描述保持只写可见特征的可观察写法，不添加“高质量/精美”类空泛词。" +
+    "一、按每条结论的建议修改对应镜头；二、保持镜头数量与顺序完全不变；三、不修改结论未涉及的镜头；四、角色名与原文保持一致；五、description 与 imagePrompt 只写镜头起点的可见物理事实，imagePrompt 用正向描述写清主体、场景锚点、静止姿态、景别机位、构图和光线色彩，不写过程、运镜、转场、声音、心理、作品名模仿及负面排除词；六、action 只留一个主导动作，videoPrompt 只写运动、运镜和节奏，不重复首帧内容。" +
     "严格按以下 JSON 格式输出，shots 数组长度必须与输入一致，不要输出任何其他文字、注释或代码块标记：" +
-    "{\"shots\":[{\"description\":\"\",\"dialogue\":\"\",\"narration\":\"\",\"seconds\":5}]}";
+    "{\"shots\":[{\"description\":\"\",\"dialogue\":\"\",\"narration\":\"\",\"seconds\":5,\"shotSize\":\"\",\"camera\":\"\",\"transition\":\"\",\"action\":\"\",\"emotion\":\"\",\"characters\":[],\"imagePrompt\":\"\",\"videoPrompt\":\"\"}]}";
 
 // 全局配音指引（仅作为设置界面的说明文案，不拼进对白文本，避免被 TTS 朗读）：
 // 方法论来自 voice-direction.md——声音身份与表演分离、选型判据带反例、易混角色区分、专名发音唯一化
@@ -443,7 +460,10 @@ export const DRAMA_SHOT_RULES =
     "三、对白即行动，每句对白有戏剧目的，不让角色向观众朗读剧情资料；每场至少改变信息、权力、关系、情绪或风险之一，场尾留悬念；" +
     "四、每镜时长 seconds 取 1-30 秒；开场镜比工作景别宽一档，地理信息通过人物动作在画面内部交代，不用空镜全景开场；" +
     "五、相邻两镜画面描述不得完全相同；对白与旁白可为空字符串，旁白（画外音）不重复对白与画面已呈现的内容；" +
-    "六、爆款节奏：第一镜必须开篇爆点（冲突/悬念/反差直接开场，不做背景铺垫）；每场最后一镜留悬念钩子（新威胁/反转/未解问题）；避免连续三镜以上同景别，用景别与转场变化控制节奏。";
+    "六、爆款节奏：第一镜必须开篇爆点（冲突/悬念/反差直接开场，不做背景铺垫）；每场最后一镜留悬念钩子（新威胁/反转/未解问题）；避免连续三镜以上同景别，用景别与转场变化控制节奏；" +
+    "七、首帧 imagePrompt 按主体身份、场景锚点、静止姿态、景别机位、构图、光线色彩顺序写正向可见描述；不写缓缓、逐渐、随后、一闪而过等过程，不混入运镜、转场、声音、心理、作品名模仿或负面排除词；" +
+    "八、action 只写一个主导动作；videoPrompt 只写主体运动、环境运动、运镜和节奏，不重复首帧已有的外貌、场景、光线与画风；characters 必须显式列出出场人物，空镜写空数组；" +
+    "九、生图前先锁定角色四视图与贯穿全剧的核心道具、场景参考；同一人物、服饰、核心道具与场景锚点跨镜保持一致。";
 
 export const DRAMA_CHARACTER_RULES =
     "角色描述规范：只写可观察的外貌特征——发型、发色、五官与体型、服饰件数与材质、标志物等身份锚点，要求可见、可生成、可比较，直接作为立绘提示词基底；" +

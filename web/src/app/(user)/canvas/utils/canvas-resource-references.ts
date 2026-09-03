@@ -17,14 +17,16 @@ export type CanvasResourceReference = {
 };
 
 export function assistantReferenceContentFromNode(node: CanvasNodeData): Partial<CanvasAssistantReference> | null {
-    const content = node.metadata?.content;
+    // 先把 metadata 取成局部量：content 为真则 metadata 必存在，但 TS 无法穿过中间变量做收窄
+    const metadata = node.metadata;
+    const content = metadata?.content;
     if (node.type === CanvasNodeType.Text) {
-        const text = content || node.metadata?.prompt;
+        const text = content || metadata?.prompt;
         return text ? { text } : null;
     }
-    if (!content) return null;
-    if (isCanvasImageNodeType(node.type)) return { dataUrl: content, url: undefined, storageKey: node.metadata.storageKey, mimeType: node.metadata.mimeType };
-    if (node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) return { dataUrl: undefined, url: content, storageKey: node.metadata.storageKey, mimeType: node.metadata.mimeType };
+    if (!content || !metadata) return null;
+    if (isCanvasImageNodeType(node.type)) return { dataUrl: content, url: undefined, storageKey: metadata.storageKey, mimeType: metadata.mimeType };
+    if (node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) return { dataUrl: undefined, url: content, storageKey: metadata.storageKey, mimeType: metadata.mimeType };
     return null;
 }
 

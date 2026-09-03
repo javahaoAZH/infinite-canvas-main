@@ -17,7 +17,9 @@ export default function nextConfig(phase: string): NextConfig {
         output: process.env.NEXT_OUTPUT === "export" ? "export" : "standalone",
         allowedDevOrigins: isDev ? ["*.*.*.*"] : [],
         typescript: {
-            ignoreBuildErrors: true,
+            // 不再忽略类型错误：开启时曾把「引用不存在的标识符」这类硬运行时缺陷静默带到产物里
+            // （next build 会跑 tsc，全量类型错误已清零后才关掉本开关；新增类型错误会直接让构建失败）
+            ignoreBuildErrors: false,
         },
         env: {
             NEXT_PUBLIC_APP_VERSION: localVersion,

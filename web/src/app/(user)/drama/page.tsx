@@ -104,7 +104,7 @@ export default function DramaPage() {
                             <Button icon={<Workflow className="size-4" />} onClick={() => setComfyOpen(true)}>
                                 ComfyUI 工作流
                             </Button>
-                            <Button icon={<Network className="size-4" />} onClick={() => router.push(`/assets?tab=project&project=${encodeURIComponent(project.title)}`)}>
+                            <Button type="primary" icon={<Network className="size-4" />} onClick={() => router.push(`/assets?tab=project&project=${encodeURIComponent(project.title)}`)}>
                                 资产清单
                             </Button>
                             <Select

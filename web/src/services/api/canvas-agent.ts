@@ -161,7 +161,7 @@ async function requestGeminiCompletion(config: AiConfig, systemPrompt: string, m
         }));
         return { role: "user", parts };
     }));
-    const extraSystemParts = messages.filter((message) => message.role === "system").flatMap((message) => typeof message.content === "string" ? [{ text: message.content }] : message.content.flatMap((part) => part.type === "text" ? [{ text: part.text }] : []));
+    const extraSystemParts = messages.filter((message) => message.role === "system").flatMap((message) => typeof message.content === "string" ? [{ text: message.content }] : (message.content || []).flatMap((part) => part.type === "text" ? [{ text: part.text }] : []));
     const body = {
         model: config.model,
         stream: false,

@@ -17,9 +17,44 @@ export type AssetEntry = {
     锁定段?: string;
     依赖?: string[];
     用于?: string[];
+    模型?: string;
     更新?: string;
 };
-export type AssetManifest = { schema?: number; 项目?: string; 更新?: string; 条目?: AssetEntry[] };
+// 季集规划表：键名与清单 JSON 一致（中文），旧英文键名从未落盘，界面读不到值
+export type SeasonAct = { 幕: string; 章节?: string; 集数?: number };
+export type SeasonInfo = { 季: string; 章节?: string; 集数?: number; 幕?: SeasonAct[]; 备注?: string };
+// 分集分镜（制作分镜表）：季→集→镜头。字段分两侧——
+// 浏览器工作区侧（由 drama_episode_export 从实时分镜覆盖）：描述/对白/旁白/秒/景别/运镜/转场/动作/情绪/出场角色/出图提示词/图生视频提示词；
+// 清单策划侧（导出时按镜号原样保留）：场景/音效/音乐/帧类型/情绪强度/所属节拍/质检标准/所需资产/产物
+export type ShotRecord = {
+    镜号: number;
+    场?: string;
+    场景?: string;
+    描述?: string;
+    对白?: string;
+    旁白?: string;
+    秒?: number;
+    景别?: string;
+    运镜?: string;
+    转场?: string;
+    动作?: string;
+    情绪?: string;
+    出场角色?: string[];
+    出图提示词?: string;
+    图生视频提示词?: string;
+    音效?: string;
+    音乐?: string;
+    帧类型?: string;
+    情绪强度?: string;
+    所属节拍?: string;
+    质检标准?: string;
+    所需资产?: string[];
+    推荐模型?: string;
+    状态?: string;
+    产物?: { 分镜图?: string; 视频?: string; 对白?: string; 旁白?: string };
+};
+export type EpisodeBoard = { 集: string; 季?: string; 幕?: string; 标题?: string; 镜头?: ShotRecord[] };
+export type AssetManifest = { schema?: number; 项目?: string; 更新?: string; 条目?: AssetEntry[]; 模型策略?: Record<string, string>; 季集?: SeasonInfo[]; 分集?: EpisodeBoard[] };
 export type EpisodeAssetCheck = {
     集: string;
     缺产出: AssetEntry[];
@@ -36,6 +71,11 @@ export function fetchAssetManifest(token: string, project: string) {
     return apiGet<AssetManifest>("/api/v1/drama-assets/manifest", { project }, token);
 }
 
+// 本地媒体根目录下项目文件夹列表（资产绑定选择源）
+export function listAssetProjects(token: string) {
+    return apiGet<{ projects: string[] }>("/api/v1/drama-assets/projects", undefined, token);
+}
+
 export function upsertAssetEntry(token: string, project: string, entry: Partial<AssetEntry>) {
     return apiPost<AssetEntry>("/api/v1/drama-assets/entry", { project, entry }, token);
 }
@@ -50,6 +90,11 @@ export function writeAssetProjectFile(token: string, project: string, path: stri
 
 export function checkEpisodeAssets(token: string, project: string, episode: string) {
     return apiGet<EpisodeAssetCheck>("/api/v1/drama-assets/check", { project, episode }, token);
+}
+
+// 写入/更新某集分集分镜（按 集 合并进清单 分集）
+export function upsertEpisodeBoard(token: string, project: string, board: EpisodeBoard) {
+    return apiPost<EpisodeBoard>("/api/v1/drama-assets/episode", { project, board }, token);
 }
 
 // 绑定生成产物为新版本（multipart 直传后端落盘）

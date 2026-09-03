@@ -26,6 +26,20 @@ func DramaAssetManifest(w http.ResponseWriter, r *http.Request) {
 	OK(w, manifest)
 }
 
+// DramaAssetProjects 列出本地媒体根目录下项目文件夹（资产绑定选择源）。
+func DramaAssetProjects(w http.ResponseWriter, r *http.Request) {
+	if _, ok := service.UserFromContext(r.Context()); !ok {
+		Fail(w, "未登录或权限不足")
+		return
+	}
+	names, err := service.ListAssetProjects()
+	if err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, map[string]any{"projects": names})
+}
+
 // DramaAssetUpsertEntry 登记/更新清单条目（MCP 与界面共用）。
 func DramaAssetUpsertEntry(w http.ResponseWriter, r *http.Request) {
 	if _, ok := service.UserFromContext(r.Context()); !ok {
@@ -123,6 +137,28 @@ func DramaAssetBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	OK(w, entry)
+}
+
+// DramaAssetUpsertEpisode 写入/更新某集分集分镜（MCP 与界面共用）。
+func DramaAssetUpsertEpisode(w http.ResponseWriter, r *http.Request) {
+	if _, ok := service.UserFromContext(r.Context()); !ok {
+		Fail(w, "未登录或权限不足")
+		return
+	}
+	var body struct {
+		Project string         `json:"project"`
+		Board   map[string]any `json:"board"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		Fail(w, "参数格式不正确")
+		return
+	}
+	board, err := service.UpsertEpisodeBoard(body.Project, body.Board)
+	if err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, board)
 }
 
 // DramaAssetWriteFile 写项目文件夹受控路径（分镜稿 md 等文本或 base64 二进制）。

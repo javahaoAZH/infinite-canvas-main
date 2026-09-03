@@ -11,6 +11,9 @@ import { ClientRootInit } from "@/components/layout/client-root-init";
 import { getAntThemeConfig } from "@/lib/app-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 
+// 全局加载漫剧 MCP 通信桥：任何页面都保持与本地适配器的 WS 连接，MCP 工具（含资产清单六工具）不依赖 /drama 页面是否打开
+import "@/app/(user)/drama/services/drama-bridge";
+
 const queryClient = new QueryClient({
     defaultOptions: {
         queries: {

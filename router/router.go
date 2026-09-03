@@ -29,6 +29,8 @@ func New() *gin.Engine {
 	api.GET("/settings", gin.WrapF(handler.Settings))
 	api.GET("/qoder-channel/status", gin.WrapF(handler.QoderChannelStatus))
 	api.POST("/qoder-channel", gin.WrapF(handler.QoderChannelApply))
+	api.GET("/chatgpt-channel/status", gin.WrapF(handler.ChatGPTChannelStatus))
+	api.POST("/chatgpt-channel", gin.WrapF(handler.ChatGPTChannelApply))
 	api.GET("/storage/config", gin.WrapF(handler.StorageConfig))
 	api.GET("/media/references/:id", func(c *gin.Context) {
 		handler.ReferenceMedia(c.Writer, c.Request, c.Param("id"))
@@ -98,11 +100,14 @@ func New() *gin.Engine {
 	})
 	v1.POST("/render/local-media", gin.WrapF(handler.StageRenderMedia))
 	v1.GET("/drama-assets/manifest", gin.WrapF(handler.DramaAssetManifest))
+	v1.GET("/drama-assets/projects", gin.WrapF(handler.DramaAssetProjects))
 	v1.PUT("/drama-assets/entry", gin.WrapF(handler.DramaAssetUpsertEntry))
+	v1.POST("/drama-assets/entry", gin.WrapF(handler.DramaAssetUpsertEntry))
 	v1.POST("/drama-assets/review", gin.WrapF(handler.DramaAssetReview))
 	v1.POST("/drama-assets/bind", gin.WrapF(handler.DramaAssetBind))
 	v1.POST("/drama-assets/file", gin.WrapF(handler.DramaAssetWriteFile))
 	v1.GET("/drama-assets/check", gin.WrapF(handler.DramaAssetCheck))
+	v1.POST("/drama-assets/episode", gin.WrapF(handler.DramaAssetUpsertEpisode))
 	v1.GET("/drama-assets/file", gin.WrapF(handler.DramaAssetServe))
 	v1.GET("/videos/:id", func(c *gin.Context) {
 		handler.AIVideo(c.Writer, c.Request, c.Param("id"))

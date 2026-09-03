@@ -62,7 +62,21 @@ export function ShotsStep({ project }: { project: DramaProject }) {
         setFixing(true);
         try {
             const input = JSON.stringify({
-                shots: project.shots.map((shot, index) => ({ shot: index + 1, description: shot.description, dialogue: shot.dialogue, narration: shot.narration || "", seconds: shot.seconds })),
+                shots: project.shots.map((shot, index) => ({
+                    shot: index + 1,
+                    description: shot.description,
+                    dialogue: shot.dialogue,
+                    narration: shot.narration || "",
+                    seconds: shot.seconds,
+                    shotSize: shot.shotSize || "",
+                    camera: shot.camera || "",
+                    transition: shot.transition || "",
+                    action: shot.action || "",
+                    emotion: shot.emotion || "",
+                    characters: shot.characters || [],
+                    imagePrompt: shot.imagePrompt || "",
+                    videoPrompt: shot.videoPrompt || "",
+                })),
                 findings: review.findings.map((finding) => ({ severity: finding.severity, location: finding.location, evidence: finding.evidence, impact: finding.impact, suggestion: finding.suggestion })),
             });
             const content = await callTextModel(SHOTS_AUTOFIX_SYSTEM_PROMPT, input, effectiveConfig);
@@ -183,7 +197,7 @@ export function ShotsStep({ project }: { project: DramaProject }) {
                                 <Input.TextArea
                                     rows={3}
                                     value={shot.description}
-                                    placeholder="画面描述：场景、人物动作、构图，用于生成分镜图与视频"
+                                    placeholder="画面描述：镜头起点的场景、人物与构图，只写静态可见事实"
                                     onChange={(event) => patchShot(shot.id, { description: event.target.value })}
                                 />
                                 <Input.TextArea
@@ -200,6 +214,34 @@ export function ShotsStep({ project }: { project: DramaProject }) {
                                 placeholder="旁白：画外音文本（可选，如内心独白、时间过渡），与对白一同参与配音"
                                 onChange={(event) => patchShot(shot.id, { narration: event.target.value })}
                             />
+                            <details className="group mt-3 border-t border-stone-200 pt-3 dark:border-stone-800">
+                                <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-stone-600 marker:hidden dark:text-stone-300">
+                                    <WandSparkles className="size-4 text-amber-500" />
+                                    生成提示词
+                                    <span className="font-normal text-stone-400 dark:text-stone-500">生图前确认静态首帧，视频动作单独编写</span>
+                                    <span className="ml-auto text-xs text-stone-400 transition-transform group-open:rotate-180">⌄</span>
+                                </summary>
+                                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                    <label className="space-y-1.5 text-xs text-stone-500 dark:text-stone-400">
+                                        <span>分镜图首帧</span>
+                                        <Input.TextArea
+                                            rows={5}
+                                            value={shot.imagePrompt || ""}
+                                            placeholder="主体身份、场景锚点、静止姿态、景别机位、构图、光线色彩"
+                                            onChange={(event) => patchShot(shot.id, { imagePrompt: event.target.value })}
+                                        />
+                                    </label>
+                                    <label className="space-y-1.5 text-xs text-stone-500 dark:text-stone-400">
+                                        <span>图生视频动作</span>
+                                        <Input.TextArea
+                                            rows={5}
+                                            value={shot.videoPrompt || ""}
+                                            placeholder="只写主体运动、环境运动、运镜与节奏，不重复首帧内容"
+                                            onChange={(event) => patchShot(shot.id, { videoPrompt: event.target.value })}
+                                        />
+                                    </label>
+                                </div>
+                            </details>
                         </div>
                     ))}
                 </div>

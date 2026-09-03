@@ -24,7 +24,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name:        "drama_get_project",
-		description: "读取项目详情：剧本全文、题材/场景/画风（含中文标签与自定义画风描述）、全部分镜（id、序号、画面描述、对白、旁白、秒数、图片/视频/配音是否已生成）、角色（名称、描述、已分配视图数）、最近成片地址。不传 projectId 时取当前活跃项目。",
+		description: "读取项目详情：剧本全文、题材/场景/画风（含中文标签与自定义画风描述）、全部分镜（id、序号、画面描述、对白、旁白、秒数、景别/运镜/转场、动作/情绪/出场角色/出图提示词/图生视频提示词、图片/视频/配音是否已生成）、角色（名称、描述、已分配视图数）、最近成片地址。不传 projectId 时取当前活跃项目。",
 		inputSchema: `{
 			"type": "object",
 			"properties": {
@@ -84,7 +84,15 @@ var toolDefs = []toolDef{
 							"description": {"type": "string", "minLength": 1, "description": "画面描述：只写镜头起点时刻可见的物理事实"},
 							"dialogue": {"type": "string", "description": "对白，可为空字符串"},
 							"narration": {"type": "string", "description": "旁白（画外音），可为空字符串"},
-							"seconds": {"type": "integer", "minimum": 1, "maximum": 30, "description": "本镜时长（秒）1-30，缺省 5"}
+							"seconds": {"type": "integer", "minimum": 1, "maximum": 30, "description": "本镜时长（秒）1-30，缺省 5"},
+							"shotSize": {"type": "string", "description": "景别（远景/全景/中景/中近景/近景/特写）"},
+							"camera": {"type": "string", "description": "运镜（固定镜头/推镜头/拉镜头/横移/环绕/手持跟拍/升/降）"},
+							"transition": {"type": "string", "description": "转场（硬切/叠化/匹配剪辑/白闪/黑场）"},
+							"action": {"type": "string", "description": "动作：角色在本镜内可见的肢体动作与表情变化（小说心理描写必须外化为可见动作后写在这里）"},
+							"emotion": {"type": "string", "description": "情绪：本镜人物情绪或画面情绪基调（如震惊/压抑/释然/惊叹），进提示词驱动光线与构图"},
+							"characters": {"type": "array", "items": {"type": "string"}, "description": "本镜出场角色名数组：出图时按此精确注入角色一致性锚点，不填则回落到从画面描述里匹配角色名"},
+							"imagePrompt": {"type": "string", "description": "出图提示词：非空时覆盖分镜图提示词的内容段（画风基底、角色一致性、帧型可读性约束仍由项目级统一拼接）"},
+							"videoPrompt": {"type": "string", "description": "图生视频提示词：非空时覆盖视频提示词的内容段（运镜、转场、时长与画质约束仍由项目级统一拼接）"}
 						},
 						"required": ["description"]
 					}
@@ -122,7 +130,15 @@ var toolDefs = []toolDef{
 							"description": {"type": "string", "description": "新的画面描述"},
 							"dialogue": {"type": "string", "description": "新的对白"},
 							"narration": {"type": "string", "description": "新的旁白"},
-							"seconds": {"type": "integer", "minimum": 1, "maximum": 30, "description": "新的时长（秒）"}
+							"seconds": {"type": "integer", "minimum": 1, "maximum": 30, "description": "新的时长（秒）"},
+							"shotSize": {"type": "string", "description": "新的景别"},
+							"camera": {"type": "string", "description": "新的运镜"},
+							"transition": {"type": "string", "description": "新的转场"},
+							"action": {"type": "string", "description": "新的动作（空串清除）"},
+							"emotion": {"type": "string", "description": "新的情绪（空串清除）"},
+							"characters": {"type": "array", "items": {"type": "string"}, "description": "新的出场角色名数组"},
+							"imagePrompt": {"type": "string", "description": "新的出图提示词（空串清除）"},
+							"videoPrompt": {"type": "string", "description": "新的图生视频提示词（空串清除）"}
 						},
 						"required": ["id"]
 					}
@@ -218,8 +234,26 @@ var toolDefs = []toolDef{
 		}`,
 	},
 	{
+		name:        "drama_inject_image",
+		description: "把本地图片（Qoder ImageGen 产物）注入到漫剧项目：target=character 注入为角色立绘候选（characterId 必填，可用 characterName 按名匹配；autoAssignView 缺省 true 自动分配到首个空视图，viewKey 可指定覆盖 front/side/back/threeQuarter 某一视图，purge=true 先清空旧候选与旧视图再写入以彻底替换）；target=shotImage 注入为分镜图（shotId 必填，取自 drama_get_project，本来就是覆盖式）。推荐工作流：drama_apply_shots 写入分镜 → 逐角色/逐镜生成图片并注入 → drama_start_production 只补跑视频与配音（已有图片自动跳过）。",
+		inputSchema: `{
+			"type": "object",
+			"properties": {
+				"file": {"type": "string", "minLength": 1, "description": "本地图片绝对路径（png / jpg / jpeg / webp）"},
+				"target": {"type": "string", "enum": ["character", "shotImage"], "description": "注入目标：character=角色立绘候选，shotImage=分镜图"},
+				"characterId": {"type": "string", "description": "目标角色 id（target=character 时，与 characterName 二选一）"},
+				"characterName": {"type": "string", "description": "目标角色名（target=character 时，与 characterId 二选一，按名匹配）"},
+				"shotId": {"type": "string", "description": "目标分镜 id（target=shotImage 时必填，取自 drama_get_project）"},
+				"autoAssignView": {"type": "boolean", "description": "注入立绘后自动分配到首个空视图，缺省 true"},
+				"viewKey": {"type": "string", "enum": ["front", "side", "back", "threeQuarter"], "description": "指定覆盖某个视图（替换旧立绘）；不传则走 autoAssignView 只填首个空视图"},
+				"purge": {"type": "boolean", "description": "target=character 时先清空该角色旧候选与旧视图再写入新图（彻底替换，不留旧图堆积）"}
+			},
+			"required": ["file", "target"]
+		}`,
+	},
+	{
 		name:        "drama_asset_list",
-		description: "查询项目资产清单（D 盘项目文件夹 资产清单.json 为唯一事实源，三区分离：store 工作区/清单发布区/history 历史区）：可按分类（角色/场景/道具/生物/特效/图形）、状态（待产出/制作中/待审核/需修改/已确认/已归档）、优先级（P0-P3）过滤；返回条目含版本、审核记录、锁定段、依赖、用于。",
+		description: "查询项目资产清单（D 盘项目文件夹 资产清单.json 为唯一事实源，三区分离：store 工作区/清单发布区/history 历史区）：可按分类（角色/场景/道具/生物/特效/图形）、状态（待产出/制作中/待审核/需修改/已确认/已归档）、优先级（P0-P3）过滤；返回条目含版本、审核记录、锁定段、依赖、用于；并返回分集分镜（分集：季→集→镜头，含所需资产/推荐模型/产物）与季集结构。",
 		inputSchema: `{
 			"type": "object",
 			"properties": {
@@ -284,7 +318,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name:        "drama_episode_export",
-		description: "把浏览器活跃项目的分镜导出为 分集/<集>/分镜稿.md 九字段表，并把该集分镜图归档到 分集/<集>/shots/（返回归档数）；导出后可对照分镜稿审核资产。",
+		description: "把浏览器活跃项目的分镜导出为 分集/<集>/分镜稿.md 九字段表，并把该集分镜图归档到 分集/<集>/shots/（返回归档数）；同时把分镜沉淀进清单 分集（季→集→镜头），供界面「按季投产」视图与后续生产读取。",
 		inputSchema: `{
 			"type": "object",
 			"properties": {

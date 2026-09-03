@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,12 +14,30 @@ import (
 
 // 项目资产清单（漫剧资产 manifest）：D 盘项目文件夹为唯一事实源（发布区），
 // 浏览器 store 为工作区、条目 history/ 为历史区，三区分离不复制第二份状态。
-// 目录约定：<根目录>/<项目名>/资产清单.json；资产/<分类>/<名称>/；分集/epNN/。
+// 项目文件夹约定：<根目录>/<项目名>/资产清单.json；资产/<分类>/<名称>/；分集/epNN/；设定/（故事圣经、提示词资产等项目级设定文档）。
 var AssetCategories = []string{"角色", "场景", "道具", "生物", "特效", "图形"}
 
 var AssetStatuses = []string{"待产出", "制作中", "待审核", "需修改", "已确认", "已归档"}
 
 func nowStamp() string { return time.Now().Format("2006-01-02 15:04:05") }
+
+// ListAssetProjects 列出本地媒体根目录下全部项目文件夹名（供资产绑定选择，含尚未建清单的项目）。
+func ListAssetProjects() ([]string, error) {
+	entries, err := os.ReadDir(localMediaBaseDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	return names, nil
+}
 
 func assetProjectDir(title string) (string, error) {
 	folder := sanitizeFolderName(title)
@@ -28,14 +47,14 @@ func assetProjectDir(title string) (string, error) {
 	return filepath.Join(localMediaBaseDir(), folder), nil
 }
 
-// assetRelPath 校验清单内相对路径：只允许 资产/ 与 分集/ 两棵子树，禁越界。
+// assetRelPath 校验清单内相对路径：只允许 资产/、分集/ 与 设定/ 三棵子树，禁越界。
 func assetRelPath(rel string) (string, error) {
 	p := filepath.ToSlash(strings.TrimSpace(rel))
 	if p == "" || strings.Contains(p, "..") {
 		return "", errors.New("非法路径")
 	}
-	if !strings.HasPrefix(p, "资产/") && !strings.HasPrefix(p, "分集/") {
-		return "", errors.New("路径必须位于 资产/ 或 分集/ 下")
+	if !strings.HasPrefix(p, "资产/") && !strings.HasPrefix(p, "分集/") && !strings.HasPrefix(p, "设定/") {
+		return "", errors.New("路径必须位于 资产/、分集/ 或 设定/ 下")
 	}
 	return filepath.FromSlash(p), nil
 }
@@ -64,7 +83,9 @@ func LoadAssetManifest(title string) (map[string]any, error) {
 		return nil, err
 	}
 	var manifest map[string]any
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	// 剥离 UTF-8 BOM 后再解析：清单是可手工编辑的 JSON，Windows PowerShell 的 Set-Content -Encoding UTF8
+	// 与记事本都会写 BOM，Go 的 json.Unmarshal 不接受，否则整个清单读不出来（与 readQoderMcpJSON 同一处理）
+	if err := json.Unmarshal(bytes.TrimPrefix(data, utf8BOM), &manifest); err != nil {
 		return nil, errors.New("资产清单.json 解析失败：" + err.Error())
 	}
 	if _, ok := manifest["条目"]; !ok {
@@ -298,6 +319,37 @@ func entryVersions(entry map[string]any) []map[string]any {
 		}
 	}
 	return versions
+}
+
+// UpsertEpisodeBoard 写入/更新某集分集分镜（按 集 合并进清单 分集 数组）。
+func UpsertEpisodeBoard(title string, board map[string]any) (map[string]any, error) {
+	ep := entryString(board, "集")
+	if ep == "" {
+		return nil, errors.New("集号必填")
+	}
+	manifest, err := LoadAssetManifest(title)
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := manifest["分集"].([]any)
+	boards := make([]any, 0, len(raw)+1)
+	replaced := false
+	for _, item := range raw {
+		if old, ok := item.(map[string]any); ok && entryString(old, "集") == ep {
+			boards = append(boards, board)
+			replaced = true
+			continue
+		}
+		boards = append(boards, item)
+	}
+	if !replaced {
+		boards = append(boards, board)
+	}
+	manifest["分集"] = boards
+	if err := saveAssetManifest(title, manifest); err != nil {
+		return nil, err
+	}
+	return board, nil
 }
 
 // WriteAssetProjectFile 写项目文件夹受控路径（分镜稿 md、导出表等文本或二进制）。

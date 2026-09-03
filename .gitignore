@@ -10,6 +10,8 @@ data/
 /InfiniteCanvas.exe~
 /InfiniteCanvas.dev.exe
 /InfiniteCanvas.exe.WebView2/
+/drama-mcp.exe
+/drama-mcp.exe~
 *.tsbuildinfo
 .DS_Store
 .idea

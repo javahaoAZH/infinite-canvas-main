@@ -8,7 +8,7 @@ import { GrokTtsVoiceSelect } from "@/components/grok-tts-voice-select";
 import { ModelPicker } from "@/components/model-picker";
 import { VOICE_DIRECTION_GUIDE } from "@/app/(user)/drama/prompts";
 import { APP_DATA_CHANGED_EVENT } from "@/app/(user)/drama/services/bridge-refresh";
-import { fetchQoderChannelStatus, getBridgeSnapshot, loadBridgeConfig, onBridgeStatusChange, regenerateBridgeToken, setBridgeAdapterPath, setBridgeEnabled, type QoderChannelStatus } from "@/app/(user)/drama/services/drama-bridge";
+import { fetchChatGPTChannelStatus, fetchQoderChannelStatus, getBridgeSnapshot, getChatGPTBridgeSnapshot, loadBridgeConfig, onBridgeStatusChange, onChatGPTBridgeStatusChange, regenerateBridgeToken, regenerateChatGPTBridgeToken, setBridgeAdapterPath, setBridgeEnabled, setChatGPTBridgeEnabled, type ChatGPTChannelStatus, type QoderChannelStatus } from "@/app/(user)/drama/services/drama-bridge";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { fetchImageModels } from "@/services/api/image";
 import { getRenderFFmpegStatus, saveRenderFFmpegPath, type RenderFFmpegStatus } from "@/services/api/render";
@@ -60,7 +60,9 @@ export function AppConfigModal() {
     const copyText = useCopyText();
     const [bridgeConfig, setBridgeConfig] = useState(() => loadBridgeConfig());
     const [bridgeSnapshot, setBridgeSnapshot] = useState(() => getBridgeSnapshot());
+    const [chatGPTBridgeSnapshot, setChatGPTBridgeSnapshot] = useState(() => getChatGPTBridgeSnapshot());
     const [qoderChannelStatus, setQoderChannelStatus] = useState<QoderChannelStatus | null>(null);
+    const [chatGPTChannelStatus, setChatGPTChannelStatus] = useState<ChatGPTChannelStatus | null>(null);
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
@@ -159,18 +161,20 @@ export function AppConfigModal() {
         };
     }, [isConfigOpen, token]);
 
-    // Qoder 通道状态订阅 + 弹窗打开时刷新本地配置（令牌/路径可能在他处变化）与后端自动注册状态
+    // 两条桌面 MCP 通道独立订阅；弹窗打开时并行刷新本地配置与自动注册状态
     useEffect(() => onBridgeStatusChange(setBridgeSnapshot), []);
+    useEffect(() => onChatGPTBridgeStatusChange(setChatGPTBridgeSnapshot), []);
 
     useEffect(() => {
         if (!isConfigOpen) return;
         setBridgeConfig(loadBridgeConfig());
         let canceled = false;
-        void fetchQoderChannelStatus()
-            .then((status) => {
-                if (!canceled) setQoderChannelStatus(status);
+        void Promise.all([fetchQoderChannelStatus().catch(() => null), fetchChatGPTChannelStatus().catch(() => null)])
+            .then(([qoderStatus, chatGPTStatus]) => {
+                if (canceled) return;
+                if (qoderStatus) setQoderChannelStatus(qoderStatus);
+                if (chatGPTStatus) setChatGPTChannelStatus(chatGPTStatus);
             })
-            .catch(() => { });
         return () => {
             canceled = true;
         };
@@ -180,9 +184,11 @@ export function AppConfigModal() {
     useEffect(() => {
         if (!isConfigOpen) return;
         const reload = () => {
-            void fetchQoderChannelStatus()
-                .then(setQoderChannelStatus)
-                .catch(() => { });
+            void Promise.all([fetchQoderChannelStatus().catch(() => null), fetchChatGPTChannelStatus().catch(() => null)])
+                .then(([qoderStatus, chatGPTStatus]) => {
+                    if (qoderStatus) setQoderChannelStatus(qoderStatus);
+                    if (chatGPTStatus) setChatGPTChannelStatus(chatGPTStatus);
+                });
         };
         window.addEventListener(APP_DATA_CHANGED_EVENT, reload);
         return () => window.removeEventListener(APP_DATA_CHANGED_EVENT, reload);
@@ -197,6 +203,17 @@ export function AppConfigModal() {
         regenerateBridgeToken();
         setBridgeConfig(loadBridgeConfig());
         message.success("通道令牌已重新生成，请同步更新 Qoder 中的注册配置");
+    };
+
+    const handleChatGPTBridgeEnabled = (enabled: boolean) => {
+        setChatGPTBridgeEnabled(enabled);
+        setBridgeConfig(loadBridgeConfig());
+    };
+
+    const handleRegenerateChatGPTBridgeToken = () => {
+        regenerateChatGPTBridgeToken();
+        setBridgeConfig(loadBridgeConfig());
+        message.success("ChatGPT 通道令牌已重新生成，重启 ChatGPT 桌面端后生效");
     };
 
     const bridgeRegistrationJson = JSON.stringify(
@@ -736,6 +753,46 @@ export function AppConfigModal() {
                                 )}
                                 <div className="text-xs leading-5 text-stone-500">
                                     使用步骤：① 保持本页开启；② 复制注册配置粘贴到 Qoder 的 MCP 设置并保存；③ Qoder 拉起适配器后本页自动完成连接；④ 在 Qoder 中创作剧本与分镜并驱动生成。注意：仅本机回环通信（ws://127.0.0.1:9801）；需保持漫剧页面打开；https 部署下浏览器会拦截本地 ws 连接；一键成片需登录账号。
+                                </div>
+                            </div>
+                        ) : null}
+                    </section>
+                    <section className="mb-5 mt-4 rounded-xl border border-stone-200 bg-stone-50/70 p-3 dark:border-stone-800 dark:bg-stone-900/50">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <div className="text-sm font-medium">ChatGPT 桌面通道</div>
+                                <div className="mt-1 text-xs text-stone-500">开启后自动写入 ChatGPT 与 Codex 共用的本机 MCP 配置，可直接读取项目、编写分镜并驱动生成。</div>
+                            </div>
+                            <Switch checked={bridgeConfig.chatGPTEnabled} onChange={handleChatGPTBridgeEnabled} />
+                        </div>
+                        {bridgeConfig.chatGPTEnabled ? (
+                            <div className="mt-3 space-y-3">
+                                <div className="text-xs leading-5">
+                                    {chatGPTBridgeSnapshot.status === "connected" ? (
+                                        <span className="text-green-600 dark:text-green-400">已连接：ChatGPT 桌面通道就绪。</span>
+                                    ) : chatGPTBridgeSnapshot.registered === "failed" ? (
+                                        <span className="text-orange-600 dark:text-orange-400">自动注册失败：{chatGPTBridgeSnapshot.registerError || "未知错误"}</span>
+                                    ) : chatGPTChannelStatus && !chatGPTChannelStatus.supported ? (
+                                        <span className="text-orange-600 dark:text-orange-400">未检测到可用的 Codex CLI，暂时无法自动注册。</span>
+                                    ) : chatGPTBridgeSnapshot.registered === "ok" || chatGPTChannelStatus?.registered ? (
+                                        <span className="text-green-600 dark:text-green-400">已写入 MCP 配置，请重启 ChatGPT 桌面端后使用。</span>
+                                    ) : chatGPTBridgeSnapshot.status === "connecting" ? (
+                                        <span className="text-orange-600 dark:text-orange-400">连接中：正在等待 ChatGPT 拉起本地适配器（ws://127.0.0.1:9802）…</span>
+                                    ) : (
+                                        <span className="text-orange-600 dark:text-orange-400">正在写入 ChatGPT/Codex MCP 配置…</span>
+                                    )}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Input className="min-w-0 flex-1" value={bridgeConfig.chatGPTToken} readOnly placeholder="开启通道后自动生成" />
+                                    <Button size="small" disabled={!bridgeConfig.chatGPTToken} onClick={() => copyText(bridgeConfig.chatGPTToken, "令牌已复制")}>
+                                        复制令牌
+                                    </Button>
+                                    <Popconfirm title="重新生成令牌？" description="重新生成后旧令牌立即失效，需重启 ChatGPT 桌面端。" okText="重新生成" cancelText="取消" onConfirm={handleRegenerateChatGPTBridgeToken}>
+                                        <Button size="small">重新生成</Button>
+                                    </Popconfirm>
+                                </div>
+                                <div className="text-xs leading-5 text-stone-500">
+                                    使用步骤：① 保持无限画布开启；② 开启本通道；③ 重启 ChatGPT 桌面端；④ 在对话中输入 /mcp 检查 infinite-canvas-drama。Qoder 使用 9801，ChatGPT 使用 9802，可同时连接。
                                 </div>
                             </div>
                         ) : null}

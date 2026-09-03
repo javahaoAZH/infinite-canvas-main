@@ -1,38 +1,42 @@
-// Qoder ↔ 漫剧软件通信桥（页面侧 WS 客户端）：模块级单例，管理到本地适配器（ws://127.0.0.1:9801）的
-// 连接 / 自动重连 / 状态订阅；适配器下发的工具调用由 BRIDGE_TOOLS 处理器执行——只读写 Zustand store
+// Qoder / ChatGPT ↔ 漫剧软件通信桥（页面侧 WS 客户端）：模块级单例，分别管理到本地适配器
+// 9801 / 9802 的连接、自动重连与状态订阅；适配器下发的工具调用由 BRIDGE_TOOLS 处理器执行——只读写 Zustand store
 // 与 services（不碰 React），页面 UI 经 store 订阅实时刷新。配置（enabled/token/adapterPath）存 localStorage（极小配置）。
 import { nanoid } from "nanoid";
 
 import { ART_STYLES, DRAMA_SKILL_CATALOG, GENRE_CARDS, SCENE_PRESETS, resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
 import { notifyDataChanged, registerRefresh } from "@/app/(user)/drama/services/bridge-refresh";
-import { applyStructuredScript, createDramaRender, updateDramaShots } from "@/app/(user)/drama/services/drama-generation";
+import { applyStructuredScript, createDramaRender, updateDramaShots, type DramaShotPatch, type StructuredScriptInput } from "@/app/(user)/drama/services/drama-generation";
 import { reviewShots } from "@/app/(user)/drama/services/drama-review";
 import { DEFAULT_DIRECTOR_OPTIONS } from "@/app/(user)/drama/services/director-planner";
 import { maybeRestartDirector, startDirector } from "@/app/(user)/drama/services/director-runner";
 import { apiGet, apiPost } from "@/services/api/request";
-import { bindAssetFiles, checkEpisodeAssets, fetchAssetManifest, reviewAssetEntry, upsertAssetEntry, writeAssetProjectFile, type AssetEntry } from "@/services/api/drama-assets";
+import { bindAssetFiles, checkEpisodeAssets, fetchAssetManifest, reviewAssetEntry, upsertAssetEntry, upsertEpisodeBoard, writeAssetProjectFile, type AssetEntry, type ShotRecord } from "@/services/api/drama-assets";
 import { getRenderTask, type RenderTaskResponse } from "@/services/api/render";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
 import { getEffectiveConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useDirectorStore, type DirectorPlanOptions } from "@/stores/use-director-store";
-import { CHARACTER_VIEW_ORDER } from "@/stores/use-asset-store";
+import { CHARACTER_VIEW_ORDER, type CharacterViewKind } from "@/stores/use-asset-store";
 import { useDramaStore, type DramaMedia, type DramaProject } from "@/stores/use-drama-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type BridgeStatus = "disconnected" | "connecting" | "connected";
 export type BridgeRegistered = "ok" | "failed" | "";
-export type DramaBridgeConfig = { enabled: boolean; token: string; adapterPath: string };
+export type DramaBridgeConfig = { enabled: boolean; token: string; adapterPath: string; chatGPTEnabled: boolean; chatGPTToken: string };
 export type BridgeSnapshot = { enabled: boolean; status: BridgeStatus; registered: BridgeRegistered; registerError: string };
 export type QoderChannelStatus = { supported: boolean; registered: boolean; mode: "exe" | "node" | "unsupported"; mcpJsonPath: string; executablePath: string };
+export type ChatGPTChannelStatus = { supported: boolean; registered: boolean; mode: "exe" | "node" | "unsupported"; mcpConfigPath: string; codexCliPath: string; executablePath: string; port: number };
 
 // 查询后端自动注册状态（公共接口，无需登录态）
 export function fetchQoderChannelStatus() {
     return apiGet<QoderChannelStatus>("/api/qoder-channel/status");
 }
 
+export function fetchChatGPTChannelStatus() {
+    return apiGet<ChatGPTChannelStatus>("/api/chatgpt-channel/status");
+}
+
 const BRIDGE_STORAGE_KEY = "infinite-canvas:drama_bridge";
-const BRIDGE_WS_URL = "ws://127.0.0.1:9801";
 const RECONNECT_INTERVAL_MS = 3000;
 // drama_api_request 限制：请求体 ≤2MB，响应序列化 >1MB 截断
 const API_REQUEST_MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -43,16 +47,18 @@ type BridgeInboundMessage = { type?: string; id?: string; tool?: string; args?: 
 // ---- 配置读写 ----
 
 export function loadBridgeConfig(): DramaBridgeConfig {
-    if (typeof window === "undefined") return { enabled: false, token: "", adapterPath: "" };
+    if (typeof window === "undefined") return { enabled: false, token: "", adapterPath: "", chatGPTEnabled: false, chatGPTToken: "" };
     try {
         const parsed = JSON.parse(window.localStorage.getItem(BRIDGE_STORAGE_KEY) || "{}") as Partial<DramaBridgeConfig>;
         return {
             enabled: parsed.enabled === true,
             token: typeof parsed.token === "string" ? parsed.token : "",
             adapterPath: typeof parsed.adapterPath === "string" ? parsed.adapterPath : "",
+            chatGPTEnabled: parsed.chatGPTEnabled === true,
+            chatGPTToken: typeof parsed.chatGPTToken === "string" ? parsed.chatGPTToken : "",
         };
     } catch {
-        return { enabled: false, token: "", adapterPath: "" };
+        return { enabled: false, token: "", adapterPath: "", chatGPTEnabled: false, chatGPTToken: "" };
     }
 }
 
@@ -66,51 +72,75 @@ function generateToken(): string {
     return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : nanoid(32);
 }
 
-// ---- 连接管理（模块级单例） ----
+// ---- 连接管理（模块级单例）：Qoder 9801 与 ChatGPT 9802 可同时在线 ----
 
-let socket: WebSocket | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let connectWanted = false;
-let status: BridgeStatus = "disconnected";
-// 自动注册（后端写 ~/.qoder/mcp.json）结果：fire-and-forget 请求回填，经 notify() 暴露给 UI
-let registered: BridgeRegistered = "";
-let registerError = "";
+type BridgeRuntime = {
+    kind: "qoder" | "chatgpt";
+    wsUrl: string;
+    registerUrl: string;
+    connectWanted: boolean;
+    socket: WebSocket | null;
+    reconnectTimer: ReturnType<typeof setTimeout> | null;
+    status: BridgeStatus;
+    registered: BridgeRegistered;
+    registerError: string;
+    listeners: Set<(snapshot: BridgeSnapshot) => void>;
+};
+
+const qoderRuntime: BridgeRuntime = createBridgeRuntime("qoder", 9801, "/api/qoder-channel");
+const chatGPTRuntime: BridgeRuntime = createBridgeRuntime("chatgpt", 9802, "/api/chatgpt-channel");
 // 最近一次成片任务（内存态）：drama_get_project 的 renderUrl 从这里取，仅 http(s) 返回
 let lastRenderTask: RenderTaskResponse | null = null;
-const listeners = new Set<(snapshot: BridgeSnapshot) => void>();
+
+function createBridgeRuntime(kind: BridgeRuntime["kind"], port: number, registerUrl: string): BridgeRuntime {
+    return { kind, wsUrl: `ws://127.0.0.1:${port}`, registerUrl, connectWanted: false, socket: null, reconnectTimer: null, status: "disconnected", registered: "", registerError: "", listeners: new Set() };
+}
+
+function runtimeSnapshot(runtime: BridgeRuntime): BridgeSnapshot {
+    return { enabled: runtime.connectWanted, status: runtime.status, registered: runtime.registered, registerError: runtime.registerError };
+}
 
 export function getBridgeSnapshot(): BridgeSnapshot {
-    return { enabled: connectWanted, status, registered, registerError };
+    return runtimeSnapshot(qoderRuntime);
+}
+
+export function getChatGPTBridgeSnapshot(): BridgeSnapshot {
+    return runtimeSnapshot(chatGPTRuntime);
 }
 
 export function onBridgeStatusChange(listener: (snapshot: BridgeSnapshot) => void): () => void {
-    listeners.add(listener);
-    return () => listeners.delete(listener);
+    qoderRuntime.listeners.add(listener);
+    return () => qoderRuntime.listeners.delete(listener);
 }
 
-function notify() {
-    const snapshot = getBridgeSnapshot();
-    listeners.forEach((listener) => listener(snapshot));
+export function onChatGPTBridgeStatusChange(listener: (snapshot: BridgeSnapshot) => void): () => void {
+    chatGPTRuntime.listeners.add(listener);
+    return () => chatGPTRuntime.listeners.delete(listener);
 }
 
-function setStatus(next: BridgeStatus) {
-    if (status === next) return;
-    status = next;
-    notify();
+function notify(runtime: BridgeRuntime) {
+    const snapshot = runtimeSnapshot(runtime);
+    runtime.listeners.forEach((listener) => listener(snapshot));
 }
 
-function scheduleReconnect() {
-    if (!connectWanted || reconnectTimer) return;
-    reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        openSocket();
+function setStatus(runtime: BridgeRuntime, next: BridgeStatus) {
+    if (runtime.status === next) return;
+    runtime.status = next;
+    notify(runtime);
+}
+
+function scheduleReconnect(runtime: BridgeRuntime) {
+    if (!runtime.connectWanted || runtime.reconnectTimer) return;
+    runtime.reconnectTimer = setTimeout(() => {
+        runtime.reconnectTimer = null;
+        openSocket(runtime);
     }, RECONNECT_INTERVAL_MS);
 }
 
-function closeSocket() {
-    if (!socket) return;
-    const ws = socket;
-    socket = null;
+function closeSocket(runtime: BridgeRuntime) {
+    if (!runtime.socket) return;
+    const ws = runtime.socket;
+    runtime.socket = null;
     try {
         ws.close();
     } catch {
@@ -118,19 +148,20 @@ function closeSocket() {
     }
 }
 
-function openSocket() {
-    if (typeof window === "undefined" || !connectWanted) return;
-    const { token } = loadBridgeConfig();
+function openSocket(runtime: BridgeRuntime) {
+    if (typeof window === "undefined" || !runtime.connectWanted) return;
+    const config = loadBridgeConfig();
+    const token = runtime.kind === "qoder" ? config.token : config.chatGPTToken;
     if (!token) return;
-    setStatus("connecting");
+    setStatus(runtime, "connecting");
     let ws: WebSocket;
     try {
-        ws = new WebSocket(BRIDGE_WS_URL);
+        ws = new WebSocket(runtime.wsUrl);
     } catch {
-        scheduleReconnect();
+        scheduleReconnect(runtime);
         return;
     }
-    socket = ws;
+    runtime.socket = ws;
     ws.onopen = () => ws.send(JSON.stringify({ type: "hello", token, client: "infinite-canvas-drama", version: 1 }));
     ws.onmessage = (event) => {
         let message: BridgeInboundMessage;
@@ -140,33 +171,33 @@ function openSocket() {
             return;
         }
         if (message.type === "ready") {
-            setStatus("connected");
+            setStatus(runtime, "connected");
             return;
         }
         if (message.type === "call" && message.id && message.tool) void handleCall(ws, message.id, message.tool, message.args || {});
     };
     ws.onclose = () => {
-        if (socket === ws) socket = null;
-        setStatus("disconnected");
-        scheduleReconnect();
+        if (runtime.socket === ws) runtime.socket = null;
+        setStatus(runtime, "disconnected");
+        scheduleReconnect(runtime);
     };
     ws.onerror = () => {
         // 连接失败由 onclose 统一走重连
     };
 }
 
-// fire-and-forget 自动注册：请求结果写入快照 registered/registerError；开关行为本身不依赖该请求成功
-function requestQoderChannelRegistration(enabled: boolean, token: string) {
-    void apiPost<QoderChannelStatus>("/api/qoder-channel", { enabled, token })
+// fire-and-forget 自动注册：请求结果写入各通道快照；开关行为本身不依赖该请求成功
+function requestChannelRegistration(runtime: BridgeRuntime, enabled: boolean, token: string) {
+    void apiPost(runtime.registerUrl, { enabled, token })
         .then(() => {
-            registered = enabled ? "ok" : "";
-            registerError = "";
-            notify();
+            runtime.registered = enabled ? "ok" : "";
+            runtime.registerError = "";
+            notify(runtime);
         })
         .catch((error) => {
-            registered = "failed";
-            registerError = error instanceof Error && error.message ? error.message : "注册请求失败";
-            notify();
+            runtime.registered = "failed";
+            runtime.registerError = error instanceof Error && error.message ? error.message : "注册请求失败";
+            notify(runtime);
         });
 }
 
@@ -175,24 +206,39 @@ export function setBridgeEnabled(enabled: boolean) {
     if (enabled && !config.token) config.token = generateToken();
     config.enabled = enabled;
     saveBridgeConfig(config);
-    requestQoderChannelRegistration(enabled, config.token);
+    requestChannelRegistration(qoderRuntime, enabled, config.token);
     if (enabled) {
-        connectWanted = true;
-        openSocket();
+        qoderRuntime.connectWanted = true;
+        openSocket(qoderRuntime);
     } else {
-        stopConnection();
+        stopConnection(qoderRuntime);
     }
-    notify();
+    notify(qoderRuntime);
 }
 
-function stopConnection() {
-    connectWanted = false;
-    if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
+export function setChatGPTBridgeEnabled(enabled: boolean) {
+    const config = loadBridgeConfig();
+    if (enabled && !config.chatGPTToken) config.chatGPTToken = generateToken();
+    config.chatGPTEnabled = enabled;
+    saveBridgeConfig(config);
+    requestChannelRegistration(chatGPTRuntime, enabled, config.chatGPTToken);
+    if (enabled) {
+        chatGPTRuntime.connectWanted = true;
+        openSocket(chatGPTRuntime);
+    } else {
+        stopConnection(chatGPTRuntime);
     }
-    closeSocket();
-    setStatus("disconnected");
+    notify(chatGPTRuntime);
+}
+
+function stopConnection(runtime: BridgeRuntime) {
+    runtime.connectWanted = false;
+    if (runtime.reconnectTimer) {
+        clearTimeout(runtime.reconnectTimer);
+        runtime.reconnectTimer = null;
+    }
+    closeSocket(runtime);
+    setStatus(runtime, "disconnected");
 }
 
 export function regenerateBridgeToken(): string {
@@ -200,17 +246,33 @@ export function regenerateBridgeToken(): string {
     config.token = generateToken();
     saveBridgeConfig(config);
     // 新令牌需重写注册条目（条目 args 内嵌令牌）
-    requestQoderChannelRegistration(true, config.token);
-    if (connectWanted) {
+    requestChannelRegistration(qoderRuntime, true, config.token);
+    if (qoderRuntime.connectWanted) {
         // 换令牌后立即用新令牌重连
-        closeSocket();
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
-            reconnectTimer = null;
+        closeSocket(qoderRuntime);
+        if (qoderRuntime.reconnectTimer) {
+            clearTimeout(qoderRuntime.reconnectTimer);
+            qoderRuntime.reconnectTimer = null;
         }
-        openSocket();
+        openSocket(qoderRuntime);
     }
     return config.token;
+}
+
+export function regenerateChatGPTBridgeToken(): string {
+    const config = loadBridgeConfig();
+    config.chatGPTToken = generateToken();
+    saveBridgeConfig(config);
+    requestChannelRegistration(chatGPTRuntime, true, config.chatGPTToken);
+    if (chatGPTRuntime.connectWanted) {
+        closeSocket(chatGPTRuntime);
+        if (chatGPTRuntime.reconnectTimer) {
+            clearTimeout(chatGPTRuntime.reconnectTimer);
+            chatGPTRuntime.reconnectTimer = null;
+        }
+        openSocket(chatGPTRuntime);
+    }
+    return config.chatGPTToken;
 }
 
 export function setBridgeAdapterPath(adapterPath: string) {
@@ -326,6 +388,11 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
                 ...(shot.shotSize ? { shotSize: shot.shotSize } : {}),
                 ...(shot.camera ? { camera: shot.camera } : {}),
                 ...(shot.transition ? { transition: shot.transition } : {}),
+                ...(shot.action ? { action: shot.action } : {}),
+                ...(shot.emotion ? { emotion: shot.emotion } : {}),
+                ...(shot.characters?.length ? { characters: shot.characters } : {}),
+                ...(shot.imagePrompt ? { imagePrompt: shot.imagePrompt } : {}),
+                ...(shot.videoPrompt ? { videoPrompt: shot.videoPrompt } : {}),
                 hasImage: Boolean(project.shotImages[shot.id]),
                 hasVideo: Boolean(project.shotVideos[shot.id]),
                 hasDialogueAudio: Boolean(project.shotAudios[shot.id]),
@@ -381,7 +448,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         const project = resolveProject(undefined);
         if (!Array.isArray(args.shots) || !args.shots.length) throw new Error("shots 不能为空数组");
         return applyStructuredScript(project.id, {
-            shots: args.shots as Array<{ description?: string; dialogue?: string; narration?: string; seconds?: number; shotSize?: string; camera?: string; transition?: string }>,
+            shots: args.shots as StructuredScriptInput["shots"],
             ...(Array.isArray(args.characters) ? { characters: args.characters as Array<{ name?: string; description?: string }> } : {}),
         });
     },
@@ -390,7 +457,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
     drama_update_shots: (args) => {
         const project = resolveProject(undefined);
         if (!Array.isArray(args.shots) || !args.shots.length) throw new Error("shots 不能为空数组");
-        return updateDramaShots(project.id, args.shots as Array<{ id: string; description?: string; dialogue?: string; narration?: string; seconds?: number; shotSize?: string; camera?: string; transition?: string }>);
+        return updateDramaShots(project.id, args.shots as DramaShotPatch[]);
     },
 
     // 8. 技能规范目录（题材卡 / 场景 / 画风 / 镜头词表 / 分镜与角色写法规范）
@@ -583,23 +650,32 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
             return { ok: true, target: "shotImage", shotId };
         }
         if (target === "character") {
+            const characterName = typeof args.characterName === "string" ? args.characterName.trim() : "";
             const byId = typeof args.characterId === "string" ? project.characters.find((character) => character.id === args.characterId) : undefined;
-            const byName = !byId && typeof args.characterName === "string" && args.characterName.trim() ? project.characters.find((character) => character.name === args.characterName!.trim()) : undefined;
+            const byName = !byId && characterName ? project.characters.find((character) => character.name === characterName) : undefined;
             const character = byId || byName;
             if (!character) throw new Error(`角色不存在：${String(args.characterId || args.characterName || "")}，可用 drama_get_project 查看角色 id 与名称`);
             const candidates = [...character.candidates, media];
             const views = { ...character.views };
             let assignedView = "";
-            // 缺省自动把注入立绘分配到首个空视图，等价手动步骤的 autoAssignView
-            if (args.autoAssignView !== false) {
-                const emptyView = CHARACTER_VIEW_ORDER.find((viewKey) => !views[viewKey]);
+            // purge=true 时清空旧候选与旧视图（彻底替换，不留旧图），再写入新图
+            const purge = args.purge === true;
+            const candidateList = purge ? [media] : candidates;
+            const viewMap: Partial<Record<CharacterViewKind, DramaMedia>> = purge ? {} : views;
+            // 支持 viewKey 指定覆盖某个视图（替换旧立绘）；否则缺省自动分配到首个空视图
+            const viewKey = typeof args.viewKey === "string" ? args.viewKey : "";
+            if (viewKey && (CHARACTER_VIEW_ORDER as string[]).includes(viewKey)) {
+                viewMap[viewKey as CharacterViewKind] = media;
+                assignedView = viewKey;
+            } else if (args.autoAssignView !== false) {
+                const emptyView = CHARACTER_VIEW_ORDER.find((key) => !viewMap[key]);
                 if (emptyView) {
-                    views[emptyView] = media;
+                    viewMap[emptyView] = media;
                     assignedView = emptyView;
                 }
             }
-            useDramaStore.getState().updateProject(project.id, { characters: project.characters.map((item) => (item.id === character.id ? { ...item, candidates, views } : item)) });
-            return { ok: true, target: "character", characterId: character.id, candidateCount: candidates.length, ...(assignedView ? { assignedView } : {}) };
+            useDramaStore.getState().updateProject(project.id, { characters: project.characters.map((item) => (item.id === character.id ? { ...item, candidates: candidateList, views: viewMap } : item)) });
+            return { ok: true, target: "character", characterId: character.id, candidateCount: candidateList.length, ...(assignedView ? { assignedView } : {}) };
         }
         throw new Error(`未知 target：${target}，可选 character / shotImage`);
     },
@@ -613,7 +689,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         if (args.category) entries = entries.filter((entry) => entry.分类 === args.category);
         if (args.status) entries = entries.filter((entry) => entry.状态 === args.status);
         if (args.priority) entries = entries.filter((entry) => entry.优先级 === args.priority);
-        return { project, count: entries.length, entries };
+        return { project, count: entries.length, entries, 分集: manifest.分集 || [], 季集: manifest.季集 || [] };
     },
 
     // 19. 登记/更新清单条目（按编号合并）
@@ -664,11 +740,63 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         if (!episode) throw new Error("episode 必填（如 ep01）");
         const projectData = useDramaStore.getState().projects.find((item) => item.title === project);
         if (!projectData) throw new Error(`项目不在浏览器工作区：${project}`);
-        const lines = [`# ${projectData.title} ${episode} 分镜稿`, "", "| 镜号 | 画面描述 | 对白 | 旁白 | 秒数 | 景别 | 运镜 | 转场 | 分镜图 |", "|---|---|---|---|---|---|---|---|---|"];
-        projectData.shots.forEach((shot, index) => {
-            lines.push(`| ${index + 1} | ${shot.description} | ${shot.dialogue || ""} | ${shot.narration || ""} | ${shot.seconds} | ${shot.shotSize || ""} | ${shot.camera || ""} | ${shot.transition || ""} | ${projectData.shotImages[shot.id] ? "有" : "无"} |`);
+        // 回写分集时按镜号保留清单侧全部策划字段（场景/音效/音乐/帧类型/情绪强度/所属节拍/质检标准/所需资产），
+        // 否则一次导出就会冲掉这些不在浏览器工作区里的字段；浏览器侧字段（描述/对白/旁白/秒/镜头语言/导演字段）以工作区为准覆盖
+        const manifestNow = await fetchAssetManifest(token, project);
+        const oldBoard = (manifestNow.分集 || []).find((item) => item.集 === episode);
+        const oldShots = new Map((oldBoard?.镜头 || []).map((item) => [item.镜号, item]));
+        const boardShots: ShotRecord[] = projectData.shots.map((shot, index) => {
+            const old = oldShots.get(index + 1);
+            return {
+                ...(old || {}),
+                镜号: index + 1,
+                描述: shot.description,
+                对白: shot.dialogue,
+                旁白: shot.narration,
+                秒: shot.seconds,
+                景别: shot.shotSize,
+                运镜: shot.camera,
+                转场: shot.transition,
+                动作: shot.action,
+                情绪: shot.emotion,
+                出场角色: shot.characters,
+                出图提示词: shot.imagePrompt,
+                图生视频提示词: shot.videoPrompt,
+                所需资产: old?.所需资产 || [],
+                产物: projectData.shotImages[shot.id] ? { 分镜图: `分集/${episode}/shots/镜头${String(index + 1).padStart(2, "0")}_分镜图.png` } : old?.产物,
+            };
+        });
+        // 同步把分镜沉淀进清单 分集（生产数据落盘，界面「按季投产」视图直接读）
+        await upsertEpisodeBoard(token, project, { ...(oldBoard || {}), 集: episode, 镜头: boardShots });
+        // 分镜稿：十三列制作分镜表（镜号/场景/出场角色/景别/运镜/转场/秒/画面描述/动作/情绪/对白/旁白/分镜图）
+        const lines = [
+            `# ${projectData.title} ${episode} 分镜稿`,
+            "",
+            "| 镜号 | 场景 | 出场角色 | 景别 | 运镜 | 转场 | 秒 | 画面描述 | 动作 | 情绪 | 对白 | 旁白 | 分镜图 |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        ];
+        boardShots.forEach((shot) => {
+            lines.push(
+                `| ${shot.镜号} | ${shot.场景 || ""} | ${(shot.出场角色 || []).join("、")} | ${shot.景别 || ""} | ${shot.运镜 || ""} | ${shot.转场 || ""} | ${shot.秒 ?? ""} | ${shot.描述 || ""} | ${shot.动作 || ""} | ${shot.情绪 || ""} | ${shot.对白 || ""} | ${shot.旁白 || ""} | ${shot.产物?.分镜图 ? "有" : "无"} |`,
+            );
         });
         await writeAssetProjectFile(token, project, `分集/${episode}/分镜稿.md`, lines.join("\n") + "\n");
+        // 提示词与质检：长字段另出一份，供出图/图生视频/配音/验收各工种直接取用
+        const detail = [`# ${projectData.title} ${episode} 提示词与质检`, ""];
+        boardShots.forEach((shot) => {
+            detail.push(
+                `## 镜${shot.镜号}`,
+                `- 帧类型：${shot.帧类型 || ""}｜情绪强度：${shot.情绪强度 || ""}｜所属节拍：${shot.所属节拍 || ""}`,
+                `- 音效：${shot.音效 || ""}`,
+                `- 音乐：${shot.音乐 || ""}`,
+                `- 所需资产：${(shot.所需资产 || []).join("、")}`,
+                `- 出图提示词：${shot.出图提示词 || "（未写，生成时回落为画面描述＋动作）"}`,
+                `- 图生视频提示词：${shot.图生视频提示词 || "（未写，生成时回落为画面描述＋动作）"}`,
+                `- 质检标准：${shot.质检标准 || ""}`,
+                "",
+            );
+        });
+        await writeAssetProjectFile(token, project, `分集/${episode}/提示词与质检.md`, detail.join("\n"));
         let archived = 0;
         for (const [index, shot] of projectData.shots.entries()) {
             const media = projectData.shotImages[shot.id];
@@ -691,7 +819,14 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
 registerRefresh(() => void useConfigStore.getState().loadPublicSettings());
 
 // 模块加载即按持久化配置自启（设置弹窗挂在全局导航，任意页面都会加载本模块，保持连接不因路由切换断开）
-if (typeof window !== "undefined" && loadBridgeConfig().enabled) {
-    connectWanted = true;
-    openSocket();
+if (typeof window !== "undefined") {
+    const config = loadBridgeConfig();
+    if (config.enabled) {
+        qoderRuntime.connectWanted = true;
+        openSocket(qoderRuntime);
+    }
+    if (config.chatGPTEnabled) {
+        chatGPTRuntime.connectWanted = true;
+        openSocket(chatGPTRuntime);
+    }
 }

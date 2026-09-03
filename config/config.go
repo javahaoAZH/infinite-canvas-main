@@ -37,13 +37,39 @@ func Load() error {
 	}
 	normalizeDockerSQLiteDSN("/app/data")
 	if strings.TrimSpace(Cfg.JWTSecret) == "" || Cfg.JWTSecret == "infinite-canvas" {
-		secret, err := randomSecret()
+		secret, err := persistedJWTSecret()
 		if err != nil {
 			return err
 		}
 		Cfg.JWTSecret = secret
 	}
 	return nil
+}
+
+// persistedJWTSecret 读取或创建落盘复用的 JWT 密钥（data/.jwt-secret，已在 .gitignore 内）。
+// 未显式配置 JWT_SECRET（为空或仍是 .env.example 的占位值）时必须落盘复用：
+// 否则每次进程启动都换一个随机密钥，把浏览器里已登录的令牌全部作废——
+// 桌面双击形态下重编或重启就会静默登出，资产清单等需登录的接口一律报「未登录或权限不足」。
+func persistedJWTSecret() (string, error) {
+	const secretFile = "data/.jwt-secret"
+	if data, err := os.ReadFile(secretFile); err == nil {
+		if secret := strings.TrimSpace(string(data)); secret != "" {
+			return secret, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	secret, err := randomSecret()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(secretFile), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(secretFile, []byte(secret), 0o600); err != nil {
+		return "", err
+	}
+	return secret, nil
 }
 
 func normalizeDockerSQLiteDSN(appDataDir string) {

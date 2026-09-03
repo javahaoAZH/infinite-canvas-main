@@ -41,7 +41,8 @@ export function geminiDirectHeaders(config: AiConfig) {
 }
 
 export function dataUrlToGeminiInlineData(dataUrl: string) {
-    const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/s);
+    // 用 [\s\S] 代替 dotAll（/s）：s 标志需 es2018 target，而当前 tsconfig target 低于此
+    const match = dataUrl.match(/^data:([^;,]+);base64,([\s\S]+)$/);
     if (!match) throw new Error("Gemini 素材必须是 Base64 图片数据");
     return { inlineData: { mimeType: match[1], data: match[2] } };
 }

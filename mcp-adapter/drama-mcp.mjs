@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Qoder ↔ AI 漫剧软件 MCP 适配器（Blender MCP 模式）：
-//   Qoder(MCP 客户端) --STDIO--> 本适配器 --WebSocket(127.0.0.1:9801)--> 漫剧页面（web/src/app/(user)/drama/services/drama-bridge.ts）
-// 由 Qoder 作为 MCP 服务器拉起：node drama-mcp.mjs --token <令牌> [--port 9801]
+// 桌面 MCP 客户端 ↔ AI 漫剧软件适配器（Blender MCP 模式）：
+//   Qoder/ChatGPT --STDIO--> 本适配器 --WebSocket(127.0.0.1:port)--> 漫剧页面（web/src/app/(user)/drama/services/drama-bridge.ts）
+// 由桌面 MCP 客户端拉起：node drama-mcp.mjs --token <令牌> [--port 9801]
 // 协议：页面连上后首条消息必须是 {"type":"hello","token":"..."}；令牌匹配回 {"type":"ready"}，不匹配以 4401 关闭；
 //   工具调用 {"type":"call","id":"...","tool":"...","args":{...}} → {"type":"result","id":"...","ok":true,"data":{...} | "ok":false,"error":"中文错误"}，单次调用 120 秒超时。
 import { randomUUID } from "node:crypto";
@@ -21,12 +21,12 @@ function readArg(name) {
 const token = readArg("token");
 const port = Number(readArg("port")) || 9801;
 if (!token) {
-    process.stderr.write("缺少 --token 参数：请在 Qoder MCP 注册配置中传入漫剧页面的通道令牌\n");
+    process.stderr.write("缺少 --token 参数：请在桌面 MCP 注册配置中传入漫剧页面的通道令牌\n");
     process.exit(1);
 }
 
 const CALL_TIMEOUT_MS = 120_000;
-const PAGE_NOT_CONNECTED = "漫剧页面未连接：请打开漫剧页面并开启「Qoder 通道」开关";
+const PAGE_NOT_CONNECTED = "无限画布页面未连接：请保持软件开启并启用对应的桌面 MCP 通道";
 
 // 已通过令牌验证的漫剧页面连接（同一时间只保留最新一条，新页面接入会顶掉旧页面）
 let page = null;
@@ -153,6 +153,11 @@ const TOOLS = {
                         shotSize: z.string().optional().describe("可选景别：远景/全景/中景/中近景/近景/特写（自由描述亦可，缺省不指定）"),
                         camera: z.string().optional().describe("可选运镜：固定镜头/推镜头/拉镜头/横移/环绕/手持跟拍/升/降（自由描述亦可，缺省不指定）"),
                         transition: z.string().optional().describe("可选转场：硬切/叠化/匹配剪辑/白闪/黑场（自由描述亦可，缺省不指定）"),
+                        action: z.string().optional().describe("动作：角色在本镜内可见的肢体动作与表情变化（小说心理描写必须外化为可见动作后写在这里）"),
+                        emotion: z.string().optional().describe("情绪：本镜人物情绪或画面情绪基调（如震惊/压抑/释然/惊叹），进提示词驱动光线与构图"),
+                        characters: z.array(z.string()).optional().describe("本镜出场角色名数组：出图时按此精确注入角色一致性锚点"),
+                        imagePrompt: z.string().optional().describe("出图提示词：非空时覆盖分镜图提示词的内容段（画风基底与一致性约束仍由项目级统一拼接）"),
+                        videoPrompt: z.string().optional().describe("图生视频提示词：非空时覆盖视频提示词的内容段（运镜、转场、时长与画质约束仍由项目级统一拼接）"),
                     }),
                 )
                 .min(1)
@@ -182,6 +187,11 @@ const TOOLS = {
                         shotSize: z.string().optional().describe("新的景别（空串清除）"),
                         camera: z.string().optional().describe("新的运镜（空串清除）"),
                         transition: z.string().optional().describe("新的转场（空串清除）"),
+                        action: z.string().optional().describe("新的动作（空串清除）"),
+                        emotion: z.string().optional().describe("新的情绪（空串清除）"),
+                        characters: z.array(z.string()).optional().describe("新的出场角色名数组"),
+                        imagePrompt: z.string().optional().describe("新的出图提示词（空串清除）"),
+                        videoPrompt: z.string().optional().describe("新的图生视频提示词（空串清除）"),
                     }),
                 )
                 .min(1)
@@ -228,7 +238,7 @@ const TOOLS = {
     },
     drama_inject_image: {
         description:
-            "把本地图片（Qoder ImageGen 产物）注入到漫剧项目：target=character 注入为角色立绘候选（characterId 必填，可用 characterName 按名匹配，autoAssignView 缺省 true 自动分配到首个空视图）；target=shotImage 注入为分镜图（shotId 必填，取自 drama_get_project）。推荐工作流：drama_apply_shots 写入分镜 → 逐角色/逐镜生成图片并注入 → drama_start_production 只补跑视频与配音（已有图片自动跳过）。",
+            "把本地图片（Qoder ImageGen 产物）注入到漫剧项目：target=character 注入为角色立绘候选（characterId 必填，可用 characterName 按名匹配；autoAssignView 缺省 true 自动分配到首个空视图，viewKey 可指定覆盖 front/side/back/threeQuarter 某一视图，purge=true 先清空旧候选与旧视图再写入以彻底替换）；target=shotImage 注入为分镜图（shotId 必填，取自 drama_get_project，本来就是覆盖式）。推荐工作流：drama_apply_shots 写入分镜 → 逐角色/逐镜生成图片并注入 → drama_start_production 只补跑视频与配音（已有图片自动跳过）。",
         schema: {
             file: z.string().min(1).describe("本地图片绝对路径（png / jpg / jpeg / webp）"),
             target: z.enum(["character", "shotImage"]).describe("注入目标：character=角色立绘候选，shotImage=分镜图"),
@@ -236,6 +246,8 @@ const TOOLS = {
             characterName: z.string().optional().describe("目标角色名（target=character 时，与 characterId 二选一，按名匹配）"),
             shotId: z.string().optional().describe("目标分镜 id（target=shotImage 时必填，取自 drama_get_project）"),
             autoAssignView: z.boolean().optional().describe("注入立绘后自动分配到首个空视图，缺省 true"),
+            viewKey: z.enum(["front", "side", "back", "threeQuarter"]).optional().describe("指定覆盖某个视图（替换旧立绘）；不传则走 autoAssignView 只填首个空视图"),
+            purge: z.boolean().optional().describe("target=character 时先清空该角色旧候选与旧视图再写入新图（彻底替换，不留旧图堆积）"),
         },
         handler: async (args) => {
             const filePath = String(args.file || "");
@@ -253,7 +265,7 @@ const TOOLS = {
     },
     drama_asset_list: {
         description:
-            "查询项目资产清单（D 盘项目文件夹 资产清单.json 为唯一事实源，三区分离：store 工作区/清单发布区/history 历史区）：可按分类（角色/场景/道具/生物/特效/图形）、状态（待产出/制作中/待审核/需修改/已确认/已归档）、优先级（P0-P3）过滤；返回条目含版本、审核记录、锁定段、依赖、用于。",
+            "查询项目资产清单（D 盘项目文件夹 资产清单.json 为唯一事实源，三区分离：store 工作区/清单发布区/history 历史区）：可按分类（角色/场景/道具/生物/特效/图形）、状态（待产出/制作中/待审核/需修改/已确认/已归档）、优先级（P0-P3）过滤；返回条目含版本、审核记录、锁定段、依赖、用于；并返回分集分镜（分集：季→集→镜头，含所需资产/推荐模型/产物）与季集结构。",
         schema: {
             project: z.string().optional().describe("项目名，缺省取活跃项目名"),
             category: z.string().optional().describe("分类过滤"),
@@ -307,7 +319,7 @@ const TOOLS = {
         },
     },
     drama_episode_export: {
-        description: "把浏览器活跃项目的分镜导出为 分集/<集>/分镜稿.md 九字段表，并把该集分镜图归档到 分集/<集>/shots/（返回归档数）；导出后可对照分镜稿审核资产。",
+        description: "把浏览器活跃项目的分镜导出为 分集/<集>/分镜稿.md 九字段表，并把该集分镜图归档到 分集/<集>/shots/（返回归档数）；同时把分镜沉淀进清单 分集（季→集→镜头），供界面「按季投产」视图与后续生产读取。",
         schema: {
             project: z.string().optional().describe("项目名，缺省取活跃项目名"),
             episode: z.string().min(1).describe("集号，如 ep01"),
@@ -315,11 +327,21 @@ const TOOLS = {
     },
 };
 
-const server = new McpServer({ name: "drama-bridge", version: "0.1.0" });
+const READ_ONLY_TOOLS = new Set(["drama_list_projects", "drama_get_project", "drama_get_skills", "drama_review_shots", "drama_get_production_status", "drama_get_render_status", "drama_asset_list", "drama_episode_check"]);
+const DESTRUCTIVE_TOOLS = new Set(["drama_apply_shots", "drama_control_production", "drama_api_request", "drama_inject_image"]);
+const OPEN_WORLD_TOOLS = new Set(["drama_start_production", "drama_control_production", "drama_start_render", "drama_api_request"]);
+const server = new McpServer(
+    { name: "drama-bridge", version: "0.1.0" },
+    { instructions: "此服务器控制用户当前打开的无限画布漫剧工作区。修改项目前先读取项目并确认 projectId；整包替换分镜前先告知用户会清空已有媒体。启动批量生产或成片会调用外部模型并可能产生费用，应先确认范围。优先遵循 drama_get_skills 返回的制作规范。" },
+);
 for (const [name, tool] of Object.entries(TOOLS)) {
     server.registerTool(
         name,
-        { description: tool.description, ...(tool.schema ? { inputSchema: tool.schema } : {}) },
+        {
+            description: tool.description,
+            ...(tool.schema ? { inputSchema: tool.schema } : {}),
+            annotations: { readOnlyHint: READ_ONLY_TOOLS.has(name), destructiveHint: DESTRUCTIVE_TOOLS.has(name), openWorldHint: OPEN_WORLD_TOOLS.has(name) },
+        },
         async (args) => {
             try {
                 // 带 handler 的工具（如图片注入）在适配器侧先预处理再转发页面，其余直接透传

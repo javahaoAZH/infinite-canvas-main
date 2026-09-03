@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -57,6 +58,24 @@ func qoderAdapterMjsPath() string {
 	return abs
 }
 
+// qoderStandaloneAdapterPath 返回与主程序同目录的独立 MCP 适配器（cmd/drama-mcp 编出的产物），存在时才返回。
+// 用独立适配器注册后，重编或重启主程序不会弄断 MCP 管道，用户不需要再手动重启 MCP。
+func qoderStandaloneAdapterPath() string {
+	exePath, err := qoderExecutablePath()
+	if err != nil {
+		return ""
+	}
+	name := "drama-mcp"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	adapter := filepath.Join(filepath.Dir(exePath), name)
+	if _, err := os.Stat(adapter); err != nil {
+		return ""
+	}
+	return adapter
+}
+
 // qoderMode 判定注册模式：编译后的 exe、go run 开发模式下的 node、或不支持。
 func qoderMode() (mode string, mjsPath string, err error) {
 	exePath, err := qoderExecutablePath()
@@ -86,6 +105,11 @@ func isDramaMCPEntry(entry any) bool {
 	obj, ok := entry.(map[string]any)
 	if !ok {
 		return false
+	}
+	// 独立适配器把标识放在 command（…/drama-mcp.exe），主 exe 子命令与 node 模式放在 args，两处都要认；
+	// 只认 args 会导致独立适配器条目被当成别人的配置：关开关删不掉、令牌重写也不触发两阶段重启
+	if command, _ := obj["command"].(string); strings.Contains(command, "mcp-adapter") || strings.Contains(command, "drama-mcp") {
+		return true
 	}
 	args, _ := obj["args"].([]any)
 	for _, arg := range args {
@@ -195,12 +219,18 @@ func QoderChannelApply(enabled bool, token string) (*QoderChannelState, error) {
 		command := "node"
 		args := []string{mjsPath, "--token", token}
 		if mode == "exe" {
-			exePath, err := qoderExecutablePath()
-			if err != nil {
-				return nil, err
+			// 优先注册同目录的独立适配器（与主程序解耦）；不存在时回落到主 exe 的隐藏子命令 mcp-adapter
+			if adapter := qoderStandaloneAdapterPath(); adapter != "" {
+				command = adapter
+				args = []string{"--token", token}
+			} else {
+				exePath, err := qoderExecutablePath()
+				if err != nil {
+					return nil, err
+				}
+				command = exePath
+				args = []string{"mcp-adapter", "--token", token}
 			}
-			command = exePath
-			args = []string{"mcp-adapter", "--token", token}
 		}
 		// Qoder 热加载对同 key 原地修改 args（如令牌重写）不敏感，不会重启适配器；
 		// 因此已有条目需要更新时，先写一次删除该 key 的版本，再写新条目版本，

@@ -1,7 +1,7 @@
 package mcpadapter
 
-// Qoder ↔ AI 漫剧软件 MCP 适配器的 Go 端口（行为逐行对照 mcp-adapter/drama-mcp.mjs）：
-//   Qoder(MCP 客户端) --STDIO--> 本适配器 --WebSocket(127.0.0.1:9801)--> 漫剧页面（drama-bridge.ts）
+// 桌面 MCP 客户端 ↔ AI 漫剧软件适配器的 Go 端口（行为逐行对照 mcp-adapter/drama-mcp.mjs）：
+//   Qoder/ChatGPT --STDIO--> 本适配器 --WebSocket(127.0.0.1:port)--> 漫剧页面（drama-bridge.ts）
 
 import (
 	"encoding/json"
@@ -20,7 +20,7 @@ const (
 	// 单次工具调用超时，与 drama-mcp.mjs CALL_TIMEOUT_MS 一致
 	callTimeout = 120 * time.Second
 	// 页面未连接时的中文错误，与 drama-mcp.mjs PAGE_NOT_CONNECTED 一致
-	pageNotConnected = "漫剧页面未连接：请打开漫剧页面并开启「Qoder 通道」开关"
+	pageNotConnected = "无限画布页面未连接：请保持软件开启并启用对应的桌面 MCP 通道"
 )
 
 // 放行 Origin 校验：本服务仅绑定 127.0.0.1 回环地址，且页面连接需通过 hello 令牌门禁（不匹配时 4401 关闭），

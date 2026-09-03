@@ -10,11 +10,11 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// Run 是 mcp-adapter 子命令入口：STDIO MCP ↔ WS(127.0.0.1:port) 漫剧页面透传，
+// Run 是 mcp-adapter 子命令入口：桌面 MCP 客户端 STDIO ↔ WS(127.0.0.1:port) 漫剧页面透传，
 // 行为与 mcp-adapter/drama-mcp.mjs 一致，不碰 DB/调度器。
 func Run(token string, port int) {
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "缺少 --token 参数：请在 Qoder MCP 注册配置中传入漫剧页面的通道令牌")
+		fmt.Fprintln(os.Stderr, "缺少 --token 参数：请在桌面 MCP 注册配置中传入漫剧页面的通道令牌")
 		os.Exit(1)
 	}
 	if port <= 0 {
