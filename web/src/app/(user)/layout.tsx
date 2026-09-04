@@ -20,6 +20,8 @@ export default function UserLayout({ children }: { children: ReactNode }) {
     const isProtectedPage = protectedPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
     const isBarePage = pathname === "/login";
     const [railOpen, setRailOpen] = useState(false);
+    // 标题栏收缩按钮控制侧栏显隐（对标 ChatGPT 桌面版）
+    const [sidebarOpen, setSidebarOpen] = useState(true);
 
     useEffect(() => {
         if (!isReady || !isProtectedPage || user) return;
@@ -55,9 +57,9 @@ export default function UserLayout({ children }: { children: ReactNode }) {
 
     return (
         <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-            {isBarePage ? null : <AppTitleBar railOpen={railOpen} onRailToggle={() => setRailOpen((value) => !value)} />}
+            {isBarePage ? null : <AppTitleBar railOpen={railOpen} onRailToggle={() => setRailOpen((value) => !value)} onSidebarToggle={() => setSidebarOpen((value) => !value)} />}
             <div className="flex min-h-0 flex-1">
-                {isBarePage ? null : (
+                {isBarePage || !sidebarOpen ? null : (
                     <Suspense fallback={null}>
                         <AppSidebar />
                     </Suspense>

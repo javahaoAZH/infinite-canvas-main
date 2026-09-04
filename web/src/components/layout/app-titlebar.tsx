@@ -1,7 +1,7 @@
 "use client";
 
 // Codex 同构标题栏：左侧菜单（文件/编辑/视图/帮助）+ 当前项目标签 + 拖动区 + 右栏开关 + 窗口控制（品牌/搜索/铃铛在侧栏顶部）
-import { Clapperboard, FileText, Folder, Images, ListChecks, Menu as MenuIcon, Minus, MoreHorizontal, PanelRight, Sparkles, Square, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Clapperboard, FileText, Folder, Images, ListChecks, Menu as MenuIcon, Minus, MoreHorizontal, PanelLeft, PanelRight, Sparkles, Square, X } from "lucide-react";
 import { Dropdown, type MenuProps } from "antd";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -24,7 +24,7 @@ declare global {
 const menuItemClass = "rounded-md px-2.5 py-1 text-[13px] transition-colors hover:bg-foreground/8 hover:text-foreground";
 const controlClass = "inline-flex h-10 w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground";
 
-export function AppTitleBar({ railOpen, onRailToggle }: { railOpen: boolean; onRailToggle: () => void }) {
+export function AppTitleBar({ railOpen, onRailToggle, onSidebarToggle }: { railOpen: boolean; onRailToggle: () => void; onSidebarToggle: () => void }) {
     const router = useRouter();
     const pathname = usePathname();
     const theme = useThemeStore((state) => state.theme);
@@ -108,6 +108,16 @@ export function AppTitleBar({ railOpen, onRailToggle }: { railOpen: boolean; onR
             }}
             onDoubleClick={() => window.winMaximize?.()}
         >
+            {/* 侧栏收缩 + 前进/后退（对标 ChatGPT 桌面版标题栏左上） */}
+            <button type="button" data-no-drag title={"收缩/展开侧栏"} aria-label="收缩侧栏" className={menuItemClass} onClick={onSidebarToggle}>
+                <PanelLeft className="size-3.5" />
+            </button>
+            <button type="button" data-no-drag title="后退" aria-label="后退" className={menuItemClass} onClick={() => router.back()}>
+                <ArrowLeft className="size-3.5" />
+            </button>
+            <button type="button" data-no-drag title="前进" aria-label="前进" className={menuItemClass} onClick={() => router.forward()}>
+                <ArrowRight className="size-3.5" />
+            </button>
             {menus.map((menu) => (
                 <Dropdown key={menu.key} menu={{ items: menu.items }} trigger={["click"]}>
                     <button type="button" data-no-drag className={menuItemClass}>
