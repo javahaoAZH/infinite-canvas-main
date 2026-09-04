@@ -25,3 +25,13 @@ data/
 /find_port_owner.ps1
 /test3_director.ps1
 /web/drama-prompt-check.ts
+
+.tmp-mcp-*
+tmp-codex-ui/
+output/
+*.bak-*/
+InfiniteCanvas.exe.WebView2.bak-*/
+edge-profile*/
+edge-test-profile/
+.build-stamp
+.tmp-*
