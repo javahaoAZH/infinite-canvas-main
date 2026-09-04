@@ -543,6 +543,15 @@
         opacity: 0.35;
     }
 
+    /* 切换按钮贴图而非贴屏幕边：窄窗口贴边，宽窗口跟随图片边缘（图片最大约 1100px） */
+    .ant-image-preview-switch-prev {
+        left: clamp(16px, calc(50% - 600px), 40%) !important;
+    }
+
+    .ant-image-preview-switch-next {
+        right: clamp(16px, calc(50% - 600px), 40%) !important;
+    }
+
     .ant-image-preview-close:hover,
     .ant-image-preview-switch-prev:not(.ant-image-preview-switch-disabled):hover,
     .ant-image-preview-switch-next:hover {
