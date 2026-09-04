@@ -3,6 +3,7 @@
 // Codex 同构标题栏：左侧菜单（文件/编辑/视图/帮助）+ 当前项目标签 + 拖动区 + 右栏开关 + 窗口控制（品牌/搜索/铃铛在侧栏顶部）
 import { ArrowLeft, ArrowRight, Clapperboard, FileText, Folder, Images, ListChecks, Menu as MenuIcon, Minus, MoreHorizontal, PanelLeft, PanelRight, Sparkles, Square, X } from "lucide-react";
 import { Dropdown, type MenuProps } from "antd";
+import saveAs from "file-saver";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMemo } from "react";
@@ -76,27 +77,58 @@ export function AppTitleBar({ railOpen, onRailToggle, onSidebarToggle }: { railO
     // 当前项目标签：按路径推断上下文（对标 ChatGPT 桌面版标题栏中部的会话标签）
     const context = useMemo(() => {
         if (pathname.startsWith("/drama")) {
-            const project = useDramaStore.getState().projects[0];
-            return { label: project ? project.title : "AI 漫剧", href: "/drama", icon: <Clapperboard className="size-3.5 shrink-0" /> };
+            const project = dramaProjects[0];
+            return { kind: "drama" as const, project, label: project ? project.title : "AI 漫剧", href: "/drama", icon: <Clapperboard className="size-3.5 shrink-0" /> };
         }
         if (pathname.startsWith("/canvas/view")) {
             const project = canvasProjects.find((item) => !item.archived);
-            return { label: project ? project.title : "画布项目", href: "/canvas", icon: <Folder className="size-3.5 shrink-0" /> };
+            return { kind: "canvas" as const, project, label: project ? project.title : "画布项目", href: "/canvas", icon: <Folder className="size-3.5 shrink-0" /> };
         }
-        if (pathname.startsWith("/image")) return { label: "生图工作台", href: "/image", icon: <Images className="size-3.5 shrink-0" /> };
-        if (pathname.startsWith("/video")) return { label: "视频创作台", href: "/video", icon: <Clapperboard className="size-3.5 shrink-0" /> };
-        if (pathname.startsWith("/prompts")) return { label: "提示词库", href: "/prompts", icon: <FileText className="size-3.5 shrink-0" /> };
-        if (pathname.startsWith("/assets")) return { label: "我的素材", href: "/assets", icon: <Images className="size-3.5 shrink-0" /> };
-        if (pathname.startsWith("/queue")) return { label: "已安排", href: "/queue", icon: <ListChecks className="size-3.5 shrink-0" /> };
-        if (pathname.startsWith("/skills")) return { label: "技能库", href: "/skills", icon: <Sparkles className="size-3.5 shrink-0" /> };
-        return { label: "新对话", href: "/", icon: <MenuIcon className="size-3.5 shrink-0" /> };
+        if (pathname.startsWith("/image")) return { kind: "page" as const, project: null, label: "生图工作台", href: "/image", icon: <Images className="size-3.5 shrink-0" /> };
+        if (pathname.startsWith("/video")) return { kind: "page" as const, project: null, label: "视频创作台", href: "/video", icon: <Clapperboard className="size-3.5 shrink-0" /> };
+        if (pathname.startsWith("/prompts")) return { kind: "page" as const, project: null, label: "提示词库", href: "/prompts", icon: <FileText className="size-3.5 shrink-0" /> };
+        if (pathname.startsWith("/assets")) return { kind: "page" as const, project: null, label: "我的素材", href: "/assets", icon: <Images className="size-3.5 shrink-0" /> };
+        if (pathname.startsWith("/queue")) return { kind: "page" as const, project: null, label: "已安排", href: "/queue", icon: <ListChecks className="size-3.5 shrink-0" /> };
+        if (pathname.startsWith("/skills")) return { kind: "page" as const, project: null, label: "技能库", href: "/skills", icon: <Sparkles className="size-3.5 shrink-0" /> };
+        return { kind: "page" as const, project: null, label: "新对话", href: "/", icon: <MenuIcon className="size-3.5 shrink-0" /> };
     }, [canvasProjects, dramaProjects, pathname]);
 
-    const contextMenu: MenuProps["items"] = [
-        { key: "home", label: "新对话", onClick: () => router.push("/") },
-        { key: "plugins", label: "插件与渠道", onClick: () => router.push("/plugins") },
-        { key: "settings", label: "设置", onClick: () => router.push("/settings") },
-    ];
+    // ⋯ 菜单对接真实项目功能：漫剧可导出分镜稿/跳资产清单，画布可直接打开
+    const contextMenu: MenuProps["items"] = useMemo(() => {
+        const common: MenuProps["items"] = [
+            { type: "divider" },
+            { key: "home", label: "新对话", onClick: () => router.push("/") },
+            { key: "settings", label: "设置", onClick: () => router.push("/settings") },
+        ];
+        if (context.kind === "drama" && context.project) {
+            const project = context.project;
+            return [
+                { key: "open", label: "打开项目", onClick: () => router.push("/drama") },
+                {
+                    key: "export-storyboard",
+                    label: "导出分镜稿（Markdown）",
+                    onClick: () => {
+                        const lines = [`# ${project.title} 分镜稿`, ""];
+                        project.shots.forEach((shot, index) => {
+                            lines.push(`## 镜 ${index + 1}`, `- 画面：${shot.description || "（未填写）"}`);
+                            if (shot.dialogue.trim()) lines.push(`- 对白：${shot.dialogue.trim()}`);
+                            if ((shot.narration || "").trim()) lines.push(`- 旁白：${shot.narration!.trim()}`);
+                            if (shot.imagePrompt?.trim()) lines.push(`- 出图提示词：${shot.imagePrompt.trim()}`);
+                            if (shot.videoPrompt?.trim()) lines.push(`- 视频提示词：${shot.videoPrompt.trim()}`);
+                            lines.push("");
+                        });
+                        saveAs(new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" }), `${project.title}-分镜稿.md`);
+                    },
+                },
+                { key: "assets", label: "资产清单", onClick: () => router.push(`/assets?tab=project&project=${encodeURIComponent(project.title)}`) },
+                ...common,
+            ];
+        }
+        if (context.kind === "canvas" && context.project) {
+            return [{ key: "open", label: "打开画布", onClick: () => router.push(`/canvas/view?id=${context.project!.id}`) }, ...common];
+        }
+        return [{ key: "plugins", label: "插件与渠道", onClick: () => router.push("/plugins") }, ...common];
+    }, [context, router]);
 
     return (
         <div
