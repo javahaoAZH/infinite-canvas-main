@@ -22,6 +22,40 @@ export type DramaMedia = {
     durationMs?: number;
 };
 
+export type DramaAssetRef = {
+    key: string;
+    purpose: string;
+    variant?: string;
+    files?: string[];
+    referenceRole?: "身份" | "结构" | "姿态构图" | "场景空间" | "道具结构" | "风格" | "特效合成" | "声音";
+    referencePriority?: "主参考" | "辅助参考";
+};
+
+export type DramaPlannedAsset = {
+    key: string;
+    category: "角色" | "场景" | "道具" | "生物" | "特效" | "图形" | "声音" | "风格";
+    name: string;
+    layer: "身份母版" | "状态变体" | "表演动作" | "空间布局" | "合成层";
+    factLevel: "原文明确" | "原文推断" | "改编设计";
+    sourceEvidence: string;
+    specification: string;
+    lock: string;
+    deliverables: string[];
+    dependencies: string[];
+    priority: "P0" | "P1" | "P2" | "P3";
+    referenceRole?: DramaAssetRef["referenceRole"];
+    generationPrompt?: string;
+    avoidPrompt?: string;
+    reviewCriteria?: string[];
+};
+
+export type DramaSourceCoverage = {
+    quote: string;
+    disposition: "画面" | "对白" | "旁白" | "音效" | "合并" | "暂不采用";
+    shotNumbers: number[];
+    note?: string;
+};
+
 export type DramaShot = {
     id: string;
     description: string;
@@ -39,6 +73,17 @@ export type DramaShot = {
     characters?: string[];
     imagePrompt?: string;
     videoPrompt?: string;
+    // 小说证据与制作连续性：审查器据此检查是否误读、漏拍或把改编设计冒充原文事实
+    sourceEvidence?: string;
+    location?: string;
+    storyTime?: string;
+    shotPurpose?: string;
+    startState?: string;
+    endState?: string;
+    continuity?: string;
+    // 每镜可人工核对的通过条件，必须覆盖人物、资产、空间、动作/特效与连续性中的本镜风险点
+    qualityCriteria?: string;
+    assetRefs?: DramaAssetRef[];
     seconds: number;
 };
 
@@ -71,6 +116,14 @@ export type DramaProject = {
     canvasProjectId?: string;
     // 绑定的资产清单项目文件夹名（D 盘项目文件夹/资产清单.json）；缺省用项目标题
     assetProject?: string;
+    // 剧本拆解得到的待生产资产圣经；分集导出时与磁盘清单按 key/分类/名称合并，不覆盖已确认版本
+    plannedAssets?: DramaPlannedAsset[];
+    sourceCoverage?: DramaSourceCoverage[];
+    // 用户已逐项核对通过的代表关键帧；对应分镜图一旦重生成或重新注入必须移除确认
+    keyframeApprovals?: string[];
+    // 资产清单发生可影响生产门禁的变更时递增；用于低成本刷新远端开工检查，避免随每次分镜输入重复请求。
+    assetRevision?: number;
+    episode?: string;
 };
 
 type DramaStore = {
@@ -107,7 +160,7 @@ type DramaStore = {
 const DRAMA_STORE_KEY = "infinite-canvas:drama_store";
 
 export function newDramaShot(partial?: Partial<Omit<DramaShot, "id">>): DramaShot {
-    return { id: nanoid(), description: "", dialogue: "", narration: "", seconds: 5, ...partial };
+    return { id: nanoid(), description: "", dialogue: "", narration: "", characters: [], assetRefs: [], seconds: 5, ...partial };
 }
 
 export function createDramaProject(title: string): DramaProject {
@@ -124,6 +177,11 @@ export function createDramaProject(title: string): DramaProject {
         shotImages: {},
         shotVideos: {},
         shotAudios: {},
+        plannedAssets: [],
+        sourceCoverage: [],
+        keyframeApprovals: [],
+        assetRevision: 0,
+        episode: "ep01",
     };
 }
 
@@ -268,7 +326,7 @@ export function toReferenceImage(media: DramaMedia, name: string): ReferenceImag
     return { id: nanoid(), name, type: media.mimeType || "image/png", dataUrl: media.url, url: media.url, storageKey: media.storageKey };
 }
 
-// 分镜图参考图：收集所有角色已分配的视图（优先正面），最多 4 张
+// 分镜图参考图：每名角色取一张已分配视图（优先正面）；不静默截断，避免多人镜漏掉后排角色身份参考
 export function collectCharacterReferences(characters: DramaCharacter[]): ReferenceImage[] {
     const references: ReferenceImage[] = [];
     for (const character of characters) {
@@ -277,5 +335,5 @@ export function collectCharacterReferences(characters: DramaCharacter[]): Refere
         const media = picked[0];
         if (media) references.push(toReferenceImage(media, character.name));
     }
-    return references.slice(0, 4);
+    return references;
 }

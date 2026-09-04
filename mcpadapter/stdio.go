@@ -21,7 +21,7 @@ func newMCPServer(hub *Hub) *server.MCPServer {
 		"drama-bridge",
 		"0.1.0",
 		server.WithInputSchemaValidation(),
-		server.WithInstructions("此服务器控制用户当前打开的无限画布漫剧工作区。修改项目前先读取项目并确认 projectId；整包替换分镜前先告知用户会清空已有媒体。启动批量生产或成片会调用外部模型并可能产生费用，应先确认范围。优先遵循 drama_get_skills 返回的制作规范。"),
+		server.WithInstructions("此服务器控制用户当前打开的无限画布漫剧工作区。小说原文是事实源；先建立覆盖台账与含角色、场景、道具、特效、风格、声音的全量资产圣经。每项资产记录参考职责、生图提示词、禁止变化和逐图验收项。四视图只锁体型服装轮廓；人物进入表演或分镜前必须确认面部身份控制包。每镜必须有原文证据、唯一职责、出场角色、起止状态、连续性、首帧/动态提示词、质检和完整 assetRefs；每个引用标注身份/结构/姿态构图/场景空间/道具结构/风格/特效合成/声音职责、主次及精确文件。主身份参考必须实际进入生成请求，辅助参考不得覆盖身份。参考预算依次优先主身份、对应角度/姿态、场景/核心道具、风格/特效；超限先制作布局帧，禁止静默截断。表演资产必须绑定原文场景、动作、视线、接触道具、光源和前后状态；表情只改软组织与行为，禁止骨相漂移。复杂图按身份→姿态构图→场景道具→光色单变量迭代。失败稿不得绑定或成为后续参考；审查、开工检查和代表帧人工确认未通过时禁止批量生产。"),
 	)
 	for _, def := range toolDefs {
 		tool := mcp.NewToolWithRawSchema(def.name, def.description, json.RawMessage(def.inputSchema))
@@ -34,12 +34,13 @@ func newMCPServer(hub *Hub) *server.MCPServer {
 func toolAnnotations(name string) mcp.ToolAnnotation {
 	readOnly := map[string]bool{
 		"drama_list_projects": true, "drama_get_project": true, "drama_get_skills": true,
-		"drama_review_shots": true, "drama_get_production_status": true, "drama_get_render_status": true,
+		"drama_review_shots": true, "drama_get_production_gates": true, "drama_get_production_status": true, "drama_get_render_status": true,
 		"drama_asset_list": true, "drama_episode_check": true,
 	}[name]
 	destructive := map[string]bool{
 		"drama_apply_shots": true, "drama_control_production": true,
 		"drama_api_request": true, "drama_inject_image": true,
+		"drama_reset_workspace": true,
 	}[name]
 	openWorld := map[string]bool{
 		"drama_start_production": true, "drama_control_production": true,

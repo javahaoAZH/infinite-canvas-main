@@ -25,7 +25,7 @@ const (
 
 // 放行 Origin 校验：本服务仅绑定 127.0.0.1 回环地址，且页面连接需通过 hello 令牌门禁（不匹配时 4401 关闭），
 // 安全姿态与不校验 Origin 的 node 版适配器（drama-mcp.mjs）一致；
-// 浏览器 Origin（http://localhost:8080）与 Host（127.0.0.1:9801）不一致时若用默认校验会被 403 拒绝。
+// 浏览器 Origin（http://localhost:18080）与 Host（127.0.0.1:9801）不一致时若用默认校验会被 403 拒绝。
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }

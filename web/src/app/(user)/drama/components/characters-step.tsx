@@ -1,8 +1,8 @@
 "use client";
 
-import { Library, Mic, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowUpRight, Boxes, Library, Mic, Plus, Sparkles, Trash2, X } from "lucide-react";
 import { useState } from "react";
-import { App, Button, Empty, Input, Select, Tag } from "antd";
+import { App, Button, Empty, Image, Input, Select, Tag } from "antd";
 import { nanoid } from "nanoid";
 
 import { ART_STYLES, CUSTOM_ART_STYLE_ID, SCENE_PRESETS } from "@/app/(user)/drama/prompts";
@@ -34,8 +34,11 @@ export function CharactersStep({ project }: { project: DramaProject }) {
     const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
     const [voiceBusyIds, setVoiceBusyIds] = useState<Record<string, boolean>>({});
 
-    const patchCharacter = (id: string, patch: Partial<DramaCharacter>) => {
-        updateProject(project.id, { characters: project.characters.map((character) => (character.id === id ? { ...character, ...patch } : character)) });
+    const patchCharacter = (id: string, patch: Partial<DramaCharacter>, invalidateKeyframes = true) => {
+        updateProject(project.id, {
+            characters: project.characters.map((character) => (character.id === id ? { ...character, ...patch } : character)),
+            ...(invalidateKeyframes ? { keyframeApprovals: [] } : {}),
+        });
     };
 
     const generateCandidates = async (character: DramaCharacter) => {
@@ -96,9 +99,29 @@ export function CharactersStep({ project }: { project: DramaProject }) {
 
     return (
         <div className="mx-auto w-full max-w-5xl space-y-4">
+            <section className="border border-border bg-card/55 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <div className="flex items-center gap-2 text-sm font-medium text-foreground"><Boxes className="size-4" />本集资产生产单</div>
+                        <p className="mt-1 text-xs text-muted-foreground">角色四视图只锁身份；状态、动作、场景、道具、特效和组合关系都必须按独立资产交付。</p>
+                    </div>
+                    <Button href={`/assets?tab=project&project=${encodeURIComponent(project.assetProject || project.title)}`} icon={<ArrowUpRight className="size-4" />}>进入资产清单确认版本</Button>
+                </div>
+                <div className="mt-3 grid gap-px overflow-hidden border border-border bg-border sm:grid-cols-2 lg:grid-cols-3">
+                    {(project.plannedAssets || []).map((asset) => (
+                        <div key={asset.key} className="bg-card p-3">
+                            <div className="flex items-center gap-1.5"><span className="truncate text-xs font-medium text-foreground">{asset.name}</span><Tag className="m-0 ml-auto">{asset.priority}</Tag></div>
+                            <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{asset.key}</div>
+                            <div className="mt-2 flex flex-wrap gap-1"><Tag className="m-0">{asset.category}</Tag><Tag className="m-0">{asset.layer}</Tag><Tag className="m-0">{asset.factLevel}</Tag></div>
+                            <div className="mt-2 line-clamp-2 text-[11px] leading-4 text-muted-foreground">{asset.deliverables.join("、")}</div>
+                        </div>
+                    ))}
+                    {!project.plannedAssets?.length ? <div className="bg-card p-4 text-xs text-muted-foreground sm:col-span-2 lg:col-span-3">资产圣经为空，请返回生产规划补齐。</div> : null}
+                </div>
+            </section>
             <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-sm text-stone-500 dark:text-stone-400">
-                    为每个角色生成立绘候选，最多选 4 张分配为正 / 侧 / 背 / 四分之三视图，之后可保存到角色库并作为分镜图参考。场景与画面风格对角色立绘、分镜图与分镜视频共用，切换后重新生成即可生效。
+                <div className="text-sm text-muted-foreground">
+                    下方只管理角色身份母版。先确认脸型、发型、身材与基础服装，再到资产清单完成其余派生资产；任何未确认文件都会阻断分镜生图。
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm text-stone-500 dark:text-stone-400">场景</span>
@@ -106,14 +129,14 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                         className="min-w-36"
                         value={scene}
                         options={[{ value: "", label: "不指定" }, ...SCENE_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }))]}
-                        onChange={(value) => setScene(value)}
+                        onChange={(value) => { setScene(value); updateProject(project.id, { keyframeApprovals: [] }); }}
                     />
                     <span className="text-sm text-stone-500 dark:text-stone-400">画面风格</span>
                     <Select
-                        className="min-w-36"
+                        className="min-w-52"
                         value={artStyle}
                         options={[...ART_STYLES.map((style) => ({ value: style.id, label: style.label })), { value: CUSTOM_ART_STYLE_ID, label: "自定义" }]}
-                        onChange={(value) => setArtStyle(value)}
+                        onChange={(value) => { setArtStyle(value); updateProject(project.id, { keyframeApprovals: [] }); }}
                     />
                     <Button
                         icon={<Mic className="size-4" />}
@@ -133,7 +156,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                             if (file) void uploadVoiceRef("narrator", file, (media) => updateProject(project.id, { narratorVoiceRef: media }));
                         }}
                     />
-                    <Button icon={<Plus className="size-4" />} onClick={() => updateProject(project.id, { characters: [...project.characters, { id: nanoid(), name: `角色 ${project.characters.length + 1}`, description: "", candidates: [], views: {} }] })}>
+                    <Button icon={<Plus className="size-4" />} onClick={() => updateProject(project.id, { characters: [...project.characters, { id: nanoid(), name: `角色 ${project.characters.length + 1}`, description: "", candidates: [], views: {} }], keyframeApprovals: [] })}>
                         添加角色
                     </Button>
                 </div>
@@ -145,12 +168,18 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                         rows={2}
                         value={customArtStyle}
                         placeholder="自定义画风描述（可观察写法），例如：粗细不均的手绘铅笔线稿，淡彩薄涂上色，大面积纸面留白，阴影用交叉排线表现"
-                        onChange={(event) => setCustomArtStyle(event.target.value)}
+                        onChange={(event) => { setCustomArtStyle(event.target.value); updateProject(project.id, { keyframeApprovals: [] }); }}
                     />
                     <p className="text-xs text-stone-400 dark:text-stone-500">
                         建议写线条、上色、光影、质感等可观察特征；留空时等价默认画风。
                         {/高质量|精美|杰作|精美绝伦|顶级|电影级/.test(customArtStyle) ? "提示：“高质量/精美”类空泛词对生成效果几乎没有帮助，建议换成具体特征。" : ""}
                     </p>
+                </div>
+            ) : null}
+
+            {artStyle === "oriental-eerie-3d" ? (
+                <div className="border-l-2 border-amber-700/70 bg-amber-950/[0.03] px-3 py-2 text-xs leading-5 text-stone-500 dark:bg-amber-200/[0.03] dark:text-stone-400">
+                    红果头部取向：写实比例东方3D国漫，以青黛黑、铜锈绿、暗金和少量朱砂红建立识别；角色立绘与分镜首帧统一生效，视频继承首帧风格。
                 </div>
             ) : null}
 
@@ -196,7 +225,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                                     onChange={(event) => {
                                         const file = event.target.files?.[0];
                                         event.target.value = "";
-                                        if (file) void uploadVoiceRef(character.id, file, (media) => patchCharacter(character.id, { voiceRef: media }));
+                                    if (file) void uploadVoiceRef(character.id, file, (media) => patchCharacter(character.id, { voiceRef: media }, false));
                                     }}
                                 />
                                 <Button
@@ -210,7 +239,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                                     type="text"
                                     danger
                                     icon={<Trash2 className="size-4" />}
-                                    onClick={() => updateProject(project.id, { characters: project.characters.filter((item) => item.id !== character.id) })}
+                                    onClick={() => updateProject(project.id, { characters: project.characters.filter((item) => item.id !== character.id), keyframeApprovals: [] })}
                                 />
                             </div>
 
@@ -218,7 +247,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                                 <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                                     {character.candidates.map((media) => (
                                         <div key={media.url} className="overflow-hidden border border-stone-200 dark:border-stone-700">
-                                            <img src={media.url} alt={`${character.name} 立绘`} className="aspect-[3/4] w-full object-cover" />
+                                            <Image src={media.url} alt={`${character.name} 立绘`} width="100%" className="aspect-[3/4] w-full cursor-zoom-in object-cover" />
                                             <div className="flex items-center justify-center gap-1 p-1.5">
                                                 {CHARACTER_VIEW_ORDER.map((viewKey) => (
                                                     <button
@@ -246,7 +275,7 @@ export function CharactersStep({ project }: { project: DramaProject }) {
                                 <div className="mt-4 flex flex-wrap gap-3">
                                     {CHARACTER_VIEW_ORDER.filter((viewKey) => character.views[viewKey]).map((viewKey) => (
                                         <div key={viewKey} className="relative">
-                                            <img src={character.views[viewKey]!.url} alt={`${character.name} ${CHARACTER_VIEW_LABELS[viewKey]}`} className="h-24 w-[4.5rem] object-cover" />
+                                            <Image src={character.views[viewKey]!.url} alt={`${character.name} ${CHARACTER_VIEW_LABELS[viewKey]}`} className="h-24 w-[4.5rem] cursor-zoom-in object-cover" />
                                             <Tag className="absolute left-1 top-1 m-0 bg-black/55 text-[10px] text-white">{CHARACTER_VIEW_LABELS[viewKey]}</Tag>
                                             <button
                                                 type="button"

@@ -21,7 +21,7 @@ export default function RootLayout({
             <body
                 className="bg-background text-foreground antialiased"
                 style={{
-                    fontFamily: '"SF Pro Display","SF Pro Text","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif',
+                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif',
                 }}
             >
                 <Script

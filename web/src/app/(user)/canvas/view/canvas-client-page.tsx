@@ -361,7 +361,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    // 旧配置弹窗已废除：缺配置时跳转设置页模型渠道分区
+    const openConfigDialog = useCallback(() => router.push("/settings"), [router]);
     const addAsset = useAssetStore((state) => state.addAsset);
     const cleanupAssetImages = useAssetStore((state) => state.cleanupImages);
     const hydrated = useCanvasStore((state) => state.hydrated);
@@ -2352,7 +2353,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const baseGenerationConfig = buildGenerationConfig(effectiveConfig, node, "image");
             const generationConfig = { ...baseGenerationConfig, model: payload.model || baseGenerationConfig.model, activeChannelId: payload.channelId || baseGenerationConfig.imageChannelId || baseGenerationConfig.activeChannelId, imageChannelId: payload.channelId || baseGenerationConfig.imageChannelId, count: "1", size: node.metadata?.size || "auto" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
+                openConfigDialog();
                 return;
             }
             const userPrompt = payload.prompt.trim();
@@ -2429,7 +2430,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             if (!node.metadata?.content) return;
             const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
+                openConfigDialog();
                 return;
             }
             const childId = nanoid();
@@ -2653,7 +2654,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
+                openConfigDialog();
                 return;
             }
 
@@ -3538,7 +3539,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     }
                     : { ...buildGenerationConfig(effectiveConfig, sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
+                openConfigDialog();
                 return;
             }
 
@@ -4185,7 +4186,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                             setMaskEditModel(model);
                             setMaskEditChannelId(channelId || "");
                         }}
-                        onMissingConfig={() => openConfigDialog(true)}
+                        onMissingConfig={() => openConfigDialog()}
                         onClose={() => {
                             setMaskEditNodeId(null);
                             setMaskEditModel("");

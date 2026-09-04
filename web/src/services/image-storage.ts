@@ -3,7 +3,7 @@
 import localforage from "localforage";
 
 import { nanoid } from "nanoid";
-import { readImageMeta } from "@/lib/image-utils";
+import { detectImageFileType, readImageMeta } from "@/lib/image-utils";
 import { deleteAnonymousStorageFile, uploadAnonymousStorageFile } from "@/services/anonymous-storage";
 import { apiGet } from "@/services/api/request";
 import { useUserStore } from "@/stores/use-user-store";
@@ -137,6 +137,8 @@ export async function uploadImage(input: string | Blob, options: UploadImageOpti
     } else {
         blob = url;
     }
+    const detected = detectImageFileType(new Uint8Array(await blob.slice(0, 12).arrayBuffer()));
+    if (!detected) throw new Error("图片内容无效：文件扩展名或 MIME 正确，但实际内容不是 PNG/JPEG/WebP");
     if (!options.localOnly) {
         const serverUpload = await maybeUploadImageToServer(blob);
         if (serverUpload) return serverUpload;
@@ -146,7 +148,7 @@ export async function uploadImage(input: string | Blob, options: UploadImageOpti
     const urlObj = URL.createObjectURL(blob);
     objectUrls.set(storageKey, urlObj);
     const meta = await readImageMeta(urlObj);
-    return { url: urlObj, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
+    return { url: urlObj, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: detected.mimeType };
 }
 
 export async function uploadRemoteImageToServer(url: string, filename: string): Promise<UploadedImage> {
@@ -301,6 +303,8 @@ export async function getImageBlob(storageKey: string) {
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
     await store.setItem(storageKey, blob);
+    const previous = objectUrls.get(storageKey);
+    if (previous?.startsWith("blob:")) URL.revokeObjectURL(previous);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;

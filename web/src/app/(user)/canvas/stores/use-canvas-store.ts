@@ -20,6 +20,7 @@ export const DEFAULT_CANVAS_AGENT_PANEL: CanvasSidePanelState = { open: false, w
 export type CanvasProject = {
     id: string;
     title: string;
+    archived?: boolean;
     createdAt: string;
     updatedAt: string;
     nodes: CanvasNodeData[];
@@ -39,10 +40,13 @@ export type CanvasProject = {
 type CanvasStore = {
     hydrated: boolean;
     projects: CanvasProject[];
+    pinnedIds: string[];
     createProject: (title?: string, options?: { agentConfig?: CanvasAgentConfig; pendingAgentRequest?: CanvasPendingAgentRequest }) => string;
     importProject: (project: Partial<CanvasProject>) => string;
     openProject: (id: string) => CanvasProject | null;
     renameProject: (id: string, title: string) => void;
+    setProjectArchived: (id: string, archived: boolean) => void;
+    toggleProjectPinned: (id: string) => void;
     deleteProjects: (ids: string[]) => void;
     updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "agentConfig" | "autoTitlePending" | "backgroundMode" | "showImageInfo" | "viewport" | "sidePanel" | "agentPanel" | "pendingAgentRequest">>) => void;
     syncWithRemote: (token: string, syncEnabled: boolean) => Promise<void>;
@@ -240,6 +244,7 @@ export const useCanvasStore = create<CanvasStore>()(
         (set, get) => ({
             hydrated: false,
             projects: [],
+            pinnedIds: [],
             createProject: (title = "未命名画布", options) => {
                 const now = new Date().toISOString();
                 const id = nanoid();
@@ -312,6 +317,19 @@ export const useCanvasStore = create<CanvasStore>()(
                 }));
                 queueProjectSave(nextProject);
             },
+            setProjectArchived: (id, archived) => {
+                const project = get().projects.find((item) => item.id === id);
+                if (!project) return;
+                const nextProject = { ...project, archived, updatedAt: new Date().toISOString() };
+                set((state) => ({
+                    projects: state.projects.map((item) => (item.id === id ? nextProject : item)),
+                }));
+                queueProjectSave(nextProject);
+            },
+            toggleProjectPinned: (id) =>
+                set((state) => ({
+                    pinnedIds: state.pinnedIds.includes(id) ? state.pinnedIds.filter((item) => item !== id) : [...state.pinnedIds, id],
+                })),
             deleteProjects: (ids) => {
                 cancelProjectSaves(ids);
                 set((state) => ({
@@ -372,6 +390,7 @@ export const useCanvasStore = create<CanvasStore>()(
             partialize: (state) =>
                 ({
                     projects: state.projects,
+                    pinnedIds: state.pinnedIds,
                 }) as StorageValue<CanvasStore>["state"],
             onRehydrateStorage: () => () => {
                 useCanvasStore.setState({ hydrated: true });

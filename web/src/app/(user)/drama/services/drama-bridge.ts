@@ -5,19 +5,25 @@ import { nanoid } from "nanoid";
 
 import { ART_STYLES, DRAMA_SKILL_CATALOG, GENRE_CARDS, SCENE_PRESETS, resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
 import { notifyDataChanged, registerRefresh } from "@/app/(user)/drama/services/bridge-refresh";
-import { applyStructuredScript, createDramaRender, updateDramaShots, type DramaShotPatch, type StructuredScriptInput } from "@/app/(user)/drama/services/drama-generation";
+import { applyStructuredScript, createDramaRender, updateDramaPreproduction, updateDramaShots, validateShotAssetsReady, type DramaPreproductionPatch, type DramaShotPatch, type StructuredScriptInput } from "@/app/(user)/drama/services/drama-generation";
 import { reviewShots } from "@/app/(user)/drama/services/drama-review";
 import { DEFAULT_DIRECTOR_OPTIONS } from "@/app/(user)/drama/services/director-planner";
 import { maybeRestartDirector, startDirector } from "@/app/(user)/drama/services/director-runner";
+import { approvedRepresentativeIds, productionStages, representativeShotIds } from "@/app/(user)/drama/services/production-readiness";
+import { useCanvasStore } from "@/app/(user)/canvas/stores/use-canvas-store";
+import { deleteCanvasProjects } from "@/services/api/canvas-tasks";
 import { apiGet, apiPost } from "@/services/api/request";
-import { bindAssetFiles, checkEpisodeAssets, fetchAssetManifest, reviewAssetEntry, upsertAssetEntry, upsertEpisodeBoard, writeAssetProjectFile, type AssetEntry, type ShotRecord } from "@/services/api/drama-assets";
+import { bindAssetFiles, checkEpisodeAssets, fetchAssetManifest, reviewAssetEntry, upsertAssetEntry, upsertEpisodeBoard, writeAssetProjectBinaryFile, writeAssetProjectFile, type AssetEntry, type ShotRecord } from "@/services/api/drama-assets";
+import { detectImageFileType } from "@/lib/image-utils";
 import { getRenderTask, type RenderTaskResponse } from "@/services/api/render";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { uploadImage } from "@/services/image-storage";
+import { resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { migrateLegacyPortStorage } from "@/services/port-storage-migration";
 import { getEffectiveConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useDirectorStore, type DirectorPlanOptions } from "@/stores/use-director-store";
-import { CHARACTER_VIEW_ORDER, type CharacterViewKind } from "@/stores/use-asset-store";
-import { useDramaStore, type DramaMedia, type DramaProject } from "@/stores/use-drama-store";
+import { CHARACTER_VIEW_ORDER, useAssetStore, type CharacterViewKind } from "@/stores/use-asset-store";
+import { syncUserAssetData } from "@/services/api/user-config";
+import { useDramaStore, type DramaMedia, type DramaPlannedAsset, type DramaProject } from "@/stores/use-drama-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type BridgeStatus = "disconnected" | "connecting" | "connected";
@@ -333,7 +339,58 @@ function assetProjectArg(args: Record<string, unknown>): string {
     const state = useDramaStore.getState();
     const active = state.projects.find((item) => item.id === state.activeId);
     if (!active?.title) throw new Error("project 缺失且无活跃项目可回退");
-    return active.title;
+    return active.assetProject || active.title;
+}
+
+function invalidateAssetKeyframes(assetProject: string) {
+    const project = activeProject();
+    if (project && (project.assetProject || project.title) === assetProject) useDramaStore.getState().updateProject(project.id, { keyframeApprovals: [], assetRevision: (project.assetRevision || 0) + 1 });
+}
+
+async function publishPlannedAssets(token: string, project: string, episode: string, assets: DramaPlannedAsset[], shots: DramaProject["shots"]): Promise<Map<string, string>> {
+    if (!assets.length) throw new Error("资产圣经为空，拒绝导出不完整制作表");
+    const manifest = await fetchAssetManifest(token, project);
+    const existing = manifest.条目 || [];
+    const byKey = new Map(existing.filter((entry) => entry.键).map((entry) => [entry.键!, entry]));
+    const byName = new Map(existing.map((entry) => [`${entry.分类}\u0000${entry.名称}`, entry]));
+    const usedBy = new Map<string, string[]>();
+    shots.forEach((shot, index) => shot.assetRefs?.forEach((ref) => usedBy.set(ref.key, [...(usedBy.get(ref.key) || []), `${episode}.镜头${index + 1}`])));
+    const ids = new Map<string, string>();
+    const staged = new Map<string, AssetEntry>();
+    for (const asset of assets) {
+        const old = byKey.get(asset.key) || byName.get(`${asset.category}\u0000${asset.name}`);
+        if (old?.键 && old.键 !== asset.key) throw new Error(`资产 key 冲突：${asset.key} 与已存在的 ${old.键} 指向同一名称`);
+        const planned: Partial<AssetEntry> = {
+            分类: asset.category,
+            名称: asset.name,
+            键: asset.key,
+            层级: asset.layer,
+            事实等级: asset.factLevel,
+            依据: asset.sourceEvidence,
+            规格: asset.specification,
+            锁定段: asset.lock,
+            交付件: asset.deliverables,
+            参考职责: asset.referenceRole,
+            生图提示词: asset.generationPrompt,
+            禁止变化: asset.avoidPrompt,
+            验收项: asset.reviewCriteria,
+            优先级: asset.priority,
+            状态: "待产出",
+            用于: [...new Set([...(old?.用于 || []), ...(usedBy.get(asset.key) || [])])],
+        };
+        const entry = old?.状态 === "已确认" ? { ...planned, ...old, 键: asset.key, 用于: planned.用于 } : { ...old, ...planned, ...(old?.编号 ? { 编号: old.编号 } : {}) };
+        const saved = await upsertAssetEntry(token, project, entry);
+        ids.set(asset.key, saved.编号);
+        staged.set(asset.key, saved);
+    }
+    for (const asset of assets) {
+        const saved = staged.get(asset.key)!;
+        if (saved.状态 === "已确认") continue;
+        const dependencies = asset.dependencies.map((key) => ids.get(key)).filter((id): id is string => Boolean(id));
+        if (dependencies.length !== asset.dependencies.length) throw new Error(`资产 ${asset.key} 存在无法解析的依赖`);
+        if (dependencies.length) await upsertAssetEntry(token, project, { ...saved, 依赖: dependencies });
+    }
+    return ids;
 }
 
 function dataUrlToBlob(dataUrl: string): Blob {
@@ -353,7 +410,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
     return btoa(binary);
 }
 
-// 17 个 MCP 工具的页面侧处理器：全部经 store action / services 函数写数据（绝不直接改内存对象），React 界面经 store 订阅实时刷新
+// MCP 工具的页面侧处理器：全部经 store action / services 函数写数据（绝不直接改内存对象），React 界面经 store 订阅实时刷新
 const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> = {
     // 1. 项目列表（按 updatedAt 倒序）
     drama_list_projects: () => ({
@@ -378,6 +435,11 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
             artStyle,
             artStyleLabel: resolveArtStyleLabel(artStyle),
             customArtStyle,
+            episode: project.episode || "ep01",
+            plannedAssets: project.plannedAssets || [],
+            sourceCoverage: project.sourceCoverage || [],
+            keyframeApprovals: approvedRepresentativeIds(project),
+            representativeShotIds: representativeShotIds(project),
             shots: project.shots.map((shot, index) => ({
                 id: shot.id,
                 index: index + 1,
@@ -390,9 +452,18 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
                 ...(shot.transition ? { transition: shot.transition } : {}),
                 ...(shot.action ? { action: shot.action } : {}),
                 ...(shot.emotion ? { emotion: shot.emotion } : {}),
-                ...(shot.characters?.length ? { characters: shot.characters } : {}),
+                characters: shot.characters || [],
                 ...(shot.imagePrompt ? { imagePrompt: shot.imagePrompt } : {}),
                 ...(shot.videoPrompt ? { videoPrompt: shot.videoPrompt } : {}),
+                ...(shot.sourceEvidence ? { sourceEvidence: shot.sourceEvidence } : {}),
+                ...(shot.location ? { location: shot.location } : {}),
+                ...(shot.storyTime ? { storyTime: shot.storyTime } : {}),
+                ...(shot.shotPurpose ? { shotPurpose: shot.shotPurpose } : {}),
+                ...(shot.startState ? { startState: shot.startState } : {}),
+                ...(shot.endState ? { endState: shot.endState } : {}),
+                ...(shot.continuity ? { continuity: shot.continuity } : {}),
+                ...(shot.qualityCriteria ? { qualityCriteria: shot.qualityCriteria } : {}),
+                ...(shot.assetRefs?.length ? { assetRefs: shot.assetRefs } : {}),
                 hasImage: Boolean(project.shotImages[shot.id]),
                 hasVideo: Boolean(project.shotVideos[shot.id]),
                 hasDialogueAudio: Boolean(project.shotAudios[shot.id]),
@@ -403,12 +474,58 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         };
     },
 
+    // 局部更新角色文字锚点，保留候选图、四视图、分镜与全部媒体
+    drama_update_characters: (args) => {
+        const project = resolveProject(args.projectId);
+        const patches = args.characters as Array<{ id?: string; name?: string; description?: string }> | undefined;
+        if (!patches?.length) throw new Error("characters 必填且不能为空");
+        const next = [...project.characters];
+        for (const patch of patches) {
+            const index = next.findIndex((character) => (patch.id ? character.id === patch.id : character.name === patch.name));
+            if (index < 0) throw new Error(`角色不存在：${patch.id || patch.name || "未指定"}`);
+            const description = String(patch.description || "").trim();
+            if (!description) throw new Error("description 必填且不能为空");
+            next[index] = { ...next[index], description };
+        }
+        useDramaStore.getState().updateProject(project.id, { characters: next });
+        return { projectId: project.id, updated: patches.length };
+    },
+
     // 3. 新建项目：设为活跃项目，不在 /drama 时跳转过去，用户可实时看到大脑逐条写入
     drama_create_project: (args) => {
         const projectId = useDramaStore.getState().createProject(typeof args.title === "string" ? args.title : undefined);
         useDramaStore.getState().openProject(projectId);
         if (typeof window !== "undefined" && !window.location.pathname.startsWith("/drama")) window.location.assign("/drama");
         return { projectId };
+    },
+
+    // 强确认清空生产工作区：仅清漫剧、画布与“我的素材”，保留账号、API Key、渠道和主题；完成后预置本项目选定的东方志怪画风
+    drama_reset_workspace: async (args) => {
+        if (args.confirm !== "RESET") throw new Error("清空工作区必须传 confirm=RESET");
+        const dramaStore = useDramaStore.getState();
+        const canvasStore = useCanvasStore.getState();
+        const assetStore = useAssetStore.getState();
+        const dramaProjectIds = dramaStore.projects.map((project) => project.id);
+        const canvasProjectIds = canvasStore.projects.map((project) => project.id);
+        const assetIds = assetStore.assets.map((asset) => asset.id);
+
+        canvasStore.deleteProjects(canvasProjectIds);
+        await deleteCanvasProjects(canvasProjectIds);
+        assetIds.forEach((id) => useAssetStore.getState().removeAsset(id));
+        const token = useUserStore.getState().token;
+        if (token) await syncUserAssetData(token, { assets: [] });
+        dramaProjectIds.forEach((id) => useDramaStore.getState().deleteProject(id));
+        const resetDramaStore = useDramaStore.getState();
+        resetDramaStore.setGenre("");
+        resetDramaStore.setScene("");
+        resetDramaStore.setCustomArtStyle("");
+        resetDramaStore.setArtStyle("oriental-eerie-3d");
+        return {
+            ok: true,
+            removed: { dramaProjects: dramaProjectIds.length, canvasProjects: canvasProjectIds.length, assets: assetIds.length },
+            preserved: ["账号登录态", "API Key", "模型渠道", "主题设置"],
+            artStyle: "oriental-eerie-3d",
+        };
     },
 
     // 4. 生成选项：非法 id 报错并列出全部合法 id
@@ -430,6 +547,10 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
             store.setArtStyle(artStyle);
         }
         if (args.customArtStyle !== undefined) store.setCustomArtStyle(String(args.customArtStyle));
+        if (args.scene !== undefined || args.artStyle !== undefined || args.customArtStyle !== undefined) {
+            const project = activeProject();
+            if (project) store.updateProject(project.id, { keyframeApprovals: [] });
+        }
         return { ok: true };
     },
 
@@ -445,19 +566,63 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
 
     // 6. 结构化直写分镜与角色（Qoder 大脑入口，不走文本模型）：整包替换 + 清空三张媒体表
     drama_apply_shots: (args) => {
-        const project = resolveProject(undefined);
+        const project = resolveProject(args.projectId);
         if (!Array.isArray(args.shots) || !args.shots.length) throw new Error("shots 不能为空数组");
         return applyStructuredScript(project.id, {
             shots: args.shots as StructuredScriptInput["shots"],
             ...(Array.isArray(args.characters) ? { characters: args.characters as Array<{ name?: string; description?: string }> } : {}),
+            ...(Array.isArray(args.coverage) ? { coverage: args.coverage as StructuredScriptInput["coverage"] } : {}),
+            ...(Array.isArray(args.assets) ? { assets: args.assets as StructuredScriptInput["assets"] } : {}),
+            ...(typeof args.episode === "string" ? { episode: args.episode } : {}),
         });
     },
 
     // 7. 按 id 部分更新分镜（检测 → 修复 → 回写闭环）：不清媒体、保留未提及分镜
     drama_update_shots: (args) => {
-        const project = resolveProject(undefined);
+        const project = resolveProject(args.projectId);
         if (!Array.isArray(args.shots) || !args.shots.length) throw new Error("shots 不能为空数组");
         return updateDramaShots(project.id, args.shots as DramaShotPatch[]);
+    },
+
+    // 旧项目局部升级：补覆盖台账与资产圣经，复用现有分镜校验，绝不清空媒体。
+    drama_update_preproduction: (args) => {
+        const project = resolveProject(args.projectId);
+        if (!Array.isArray(args.coverage) || !args.coverage.length) throw new Error("coverage 不能为空数组");
+        if (!Array.isArray(args.assets) || !args.assets.length) throw new Error("assets 不能为空数组");
+        return updateDramaPreproduction(project.id, args as unknown as DramaPreproductionPatch);
+    },
+
+    // 端口升级恢复：强制从 8080 读取一次，并在当前页立即重载持久化项目状态。
+    drama_migrate_legacy_storage: async (args) => {
+        const stores = Array.isArray(args.stores) ? args.stores.filter((store): store is string => typeof store === "string") : ["app_state"];
+        const result = await migrateLegacyPortStorage(true, stores);
+        await useDramaStore.persist.rehydrate();
+        return {
+            ...result,
+            projects: useDramaStore.getState().projects.map((project) => ({ id: project.id, title: project.title, shots: project.shots.length, characters: project.characters.length })),
+        };
+    },
+
+    drama_export_project_snapshot: async (args) => {
+        const project = resolveProject(args.projectId);
+        const token = useUserStore.getState().token;
+        const path = "设定/浏览器项目快照.json";
+        await writeAssetProjectFile(token, project.title, path, JSON.stringify(project));
+        return { projectId: project.id, project: project.title, path, shots: project.shots.length, characters: project.characters.length };
+    },
+
+    drama_import_project_snapshot: async (args) => {
+        const project = String(args.project || "").trim();
+        if (!project) throw new Error("project 不能为空");
+        const token = useUserStore.getState().token;
+        const path = "设定/浏览器项目快照.json";
+        const response = await fetch(`/api/v1/drama-assets/file?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!response.ok) throw new Error("浏览器项目快照不存在或无法读取");
+        const snapshot = JSON.parse(await response.text()) as DramaProject;
+        if (!snapshot.id || !snapshot.title || !Array.isArray(snapshot.shots) || !Array.isArray(snapshot.characters)) throw new Error("浏览器项目快照格式无效");
+        useDramaStore.setState((state) => ({ projects: [snapshot, ...state.projects.filter((item) => item.id !== snapshot.id)], activeId: snapshot.id }));
+        notifyDataChanged("/drama");
+        return { projectId: snapshot.id, project: snapshot.title, shots: snapshot.shots.length, characters: snapshot.characters.length };
     },
 
     // 8. 技能规范目录（题材卡 / 场景 / 画风 / 镜头词表 / 分镜与角色写法规范）
@@ -485,10 +650,51 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         };
     },
 
+    // 生产门禁快照：同时读取浏览器生产状态与磁盘资产清单，供 MCP 在产生费用前决定下一步。
+    drama_get_production_gates: async (args) => {
+        const project = resolveProject(args.projectId);
+        const check = await checkEpisodeAssets(requireBridgeToken(), project.assetProject || project.title, project.episode || "ep01");
+        const localStages = productionStages(project);
+        const stages = localStages.map((stage) => stage.id === "masters" ? {
+            ...stage,
+            ready: stage.ready && check.可开工,
+            detail: !stage.ready ? "本集出场角色还没有身份参考视图" : check.可开工 ? "清单、版本、文件与逐镜引用均已确认" : "资产清单开工检查未通过",
+        } : stage);
+        const representativeIds = representativeShotIds(project);
+        return {
+            projectId: project.id,
+            stages,
+            representativeShots: representativeIds.map((id) => {
+                const index = project.shots.findIndex((shot) => shot.id === id);
+                return { id, index: index + 1, hasImage: Boolean(project.shotImages[id]), approved: approvedRepresentativeIds(project).includes(id) };
+            }),
+            assetCheck: check,
+        };
+    },
+
+    // 代表帧必须由已看过图片的人或代理明确确认；重生成/重新注入图片会自动撤销确认。
+    drama_approve_keyframe: (args) => {
+        const project = resolveProject(args.projectId);
+        const shotId = String(args.shotId || "");
+        if (!representativeShotIds(project).includes(shotId)) throw new Error("该镜头不是当前生产计划选出的代表关键帧");
+        if (!project.shotImages[shotId]) throw new Error("代表关键帧尚未生成，不能确认");
+        const approved = args.approved !== false;
+        const approvals = approved
+            ? [...new Set([...(project.keyframeApprovals || []), shotId])]
+            : (project.keyframeApprovals || []).filter((id) => id !== shotId);
+        useDramaStore.getState().updateProject(project.id, { keyframeApprovals: approvals });
+        return { shotId, approved, approvedCount: approvedRepresentativeIds({ ...project, keyframeApprovals: approvals }).length, requiredCount: representativeShotIds(project).length };
+    },
+
     // 10. 启动自动生产：buildDirectorPlan + confirmPlan + startDirector
-    drama_start_production: (args) => {
+    drama_start_production: async (args) => {
         const project = resolveProject(undefined);
         if (!project.shots.length) throw new Error("项目还没有分镜，请先 drama_apply_shots 或 drama_set_script");
+        const review = await reviewShots(project, getEffectiveConfig());
+        if (review.semanticError) throw new Error("语义审查未完成，禁止批量生产：" + review.semanticError);
+        if (review.verdict !== "pass") throw new Error(`分镜审查未通过（${review.verdict}）：${review.findings.slice(0, 5).map((finding) => `${finding.location} ${finding.impact}`).join("；")}`);
+        const check = await checkEpisodeAssets(requireBridgeToken(), project.assetProject || project.title, project.episode || "ep01");
+        if (!check.可开工) throw new Error("资产开工检查未通过，请先补齐逐镜资产与连续性字段");
         const running = useDirectorStore.getState().runningProjectId;
         if (running && running !== project.id) throw new Error("有其他项目正在自动生产，请先终止后再开始");
         const raw = args.options && typeof args.options === "object" ? (args.options as Record<string, unknown>) : {};
@@ -500,9 +706,16 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         };
         const plan = useDirectorStore.getState().buildPlan(project.id, options);
         if (!plan) throw new Error("漫剧项目不存在");
+        const representatives = representativeShotIds(project);
+        const representativeGateReady = representatives.length > 0 && approvedRepresentativeIds(project).length === representatives.length;
         useDirectorStore.getState().confirmPlan(project.id);
         startDirector(project.id);
-        return { taskCount: plan.tasks.length, estimate: { text: plan.estimate.text, image: plan.estimate.image, video: plan.estimate.video, audio: plan.estimate.audio } };
+        return {
+            mode: representativeGateReady ? "batch" : "representative-keyframes",
+            representativeShotIds: representatives,
+            taskCount: plan.tasks.length,
+            estimate: { text: plan.estimate.text, image: plan.estimate.image, video: plan.estimate.video, audio: plan.estimate.audio },
+        };
     },
 
     // 11. 生产状态：无计划返回 {status:"none"}
@@ -552,7 +765,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         return { ok: true };
     },
 
-    // 13. 一键成片（需登录、至少一个分镜视频）
+    // 13. 一键成片（需登录、代表帧已验收、全镜视频与所需音轨齐全）
     drama_start_render: async () => {
         const project = resolveProject(undefined);
         const task = await createDramaRender(project.id);
@@ -640,14 +853,28 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         const dataUrl = typeof args.dataUrl === "string" ? args.dataUrl : "";
         if (!dataUrl.startsWith("data:image/")) throw new Error("dataUrl 缺失或不是图片 base64");
         const target = String(args.target || "");
-        const uploaded = await uploadImage(dataUrl);
-        const media: DramaMedia = { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
         if (target === "shotImage") {
             const shotId = typeof args.shotId === "string" ? args.shotId : "";
             const shot = project.shots.find((item) => item.id === shotId);
             if (!shot) throw new Error(`分镜不存在：${shotId}，可用 drama_get_project 查看分镜 id`);
-            useDramaStore.getState().updateProject(project.id, { shotImages: { ...project.shotImages, [shotId]: media } });
-            return { ok: true, target: "shotImage", shotId };
+            const representatives = representativeShotIds(project);
+            const keyframeGateReady = representatives.length > 0 && approvedRepresentativeIds(project).length === representatives.length;
+            if (!keyframeGateReady && !representatives.includes(shotId)) throw new Error("代表关键帧尚未全部确认，当前只允许注入系统选出的代表镜头");
+            const check = await checkEpisodeAssets(requireBridgeToken(), project.assetProject || project.title, project.episode || "ep01");
+            if (!check.可开工) throw new Error("原文覆盖、连续性或资产开工检查未通过，拒绝注入分镜图");
+            await validateShotAssetsReady(project.id, shotId);
+            const uploaded = await uploadImage(dataUrl);
+            const verifiedUrl = await resolveImageUrl(uploaded.storageKey, uploaded.url);
+            const verifiedResponse = await fetch(verifiedUrl);
+            const verifiedBlob = verifiedResponse.ok ? await verifiedResponse.blob() : null;
+            const verifiedType = verifiedBlob ? detectImageFileType(new Uint8Array(await verifiedBlob.slice(0, 12).arrayBuffer())) : null;
+            if (!verifiedBlob?.size || !verifiedType) throw new Error("图片已上传但解码校验失败，未写入分镜");
+            const media: DramaMedia = { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
+            useDramaStore.getState().updateProject(project.id, {
+                shotImages: { ...project.shotImages, [shotId]: media },
+                keyframeApprovals: (project.keyframeApprovals || []).filter((id) => id !== shotId),
+            });
+            return { ok: true, target: "shotImage", shotId, verifiedBytes: verifiedBlob.size };
         }
         if (target === "character") {
             const characterName = typeof args.characterName === "string" ? args.characterName.trim() : "";
@@ -655,6 +882,8 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
             const byName = !byId && characterName ? project.characters.find((character) => character.name === characterName) : undefined;
             const character = byId || byName;
             if (!character) throw new Error(`角色不存在：${String(args.characterId || args.characterName || "")}，可用 drama_get_project 查看角色 id 与名称`);
+            const uploaded = await uploadImage(dataUrl);
+            const media: DramaMedia = { url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
             const candidates = [...character.candidates, media];
             const views = { ...character.views };
             let assignedView = "";
@@ -674,7 +903,10 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
                     assignedView = emptyView;
                 }
             }
-            useDramaStore.getState().updateProject(project.id, { characters: project.characters.map((item) => (item.id === character.id ? { ...item, candidates: candidateList, views: viewMap } : item)) });
+            useDramaStore.getState().updateProject(project.id, {
+                characters: project.characters.map((item) => (item.id === character.id ? { ...item, candidates: candidateList, views: viewMap } : item)),
+                keyframeApprovals: [],
+            });
             return { ok: true, target: "character", characterId: character.id, candidateCount: candidateList.length, ...(assignedView ? { assignedView } : {}) };
         }
         throw new Error(`未知 target：${target}，可选 character / shotImage`);
@@ -698,7 +930,9 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         const project = assetProjectArg(args);
         const entry = args.entry as Partial<AssetEntry> | undefined;
         if (!entry || typeof entry !== "object") throw new Error("entry 必填（对象）");
-        return upsertAssetEntry(token, project, entry);
+        const updated = await upsertAssetEntry(token, project, entry);
+        invalidateAssetKeyframes(project);
+        return updated;
     },
 
     // 20. 绑定本地产物为新版本（旧版自动入 history/，状态→待审核）
@@ -709,7 +943,9 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         const files = args.files as Array<{ name?: string; dataUrl?: string }> | undefined;
         if (!id || !files?.length) throw new Error("id 与 files 必填");
         const payloads = files.map((file) => ({ name: file.name || "asset.png", blob: dataUrlToBlob(String(file.dataUrl || "")) }));
-        return bindAssetFiles(token, project, id, payloads, String(args.note || ""), args.source ? String(args.source) : undefined);
+        const updated = await bindAssetFiles(token, project, id, payloads, String(args.note || ""), args.source ? String(args.source) : undefined);
+        invalidateAssetKeyframes(project);
+        return updated;
     },
 
     // 21. 批量审核确认（轮次留档）
@@ -720,6 +956,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         if (!ids?.length) throw new Error("ids 必填");
         const updated: AssetEntry[] = [];
         for (const id of ids) updated.push(await reviewAssetEntry(token, project, id, "MCP", "已确认", String(args.comment || "")));
+        invalidateAssetKeyframes(project);
         return { confirmed: updated.length, entries: updated };
     },
 
@@ -732,16 +969,52 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         return checkEpisodeAssets(token, project, episode);
     },
 
+    // 按镜号局部更新资产要求，不重建整集、不改镜头 id 与媒体关联
+    drama_episode_update_shots: async (args) => {
+        const token = requireBridgeToken();
+        const project = assetProjectArg(args);
+        const episode = String(args.episode || "");
+        const patches = args.shots as Array<{ 镜号?: number; 所需资产?: string[]; 资产引用?: ShotRecord["资产引用"]; 质检标准?: string }> | undefined;
+        if (!episode) throw new Error("episode 必填（如 ep01）");
+        if (!patches?.length) throw new Error("shots 必填且不能为空");
+        const manifest = await fetchAssetManifest(token, project);
+        const board = (manifest.分集 || []).find((item) => item.集 === episode);
+        if (!board) throw new Error(`分集不存在：${episode}`);
+        const byNumber = new Map((board.镜头 || []).map((shot) => [shot.镜号, shot]));
+        const invalid = patches.map((patch) => Number(patch.镜号)).filter((number) => !byNumber.has(number));
+        if (invalid.length) throw new Error(`镜号不存在：${invalid.join("、")}`);
+        for (const patch of patches) {
+            const number = Number(patch.镜号);
+            const current = byNumber.get(number)!;
+            const assetRefs = Array.isArray(patch.资产引用)
+                ? patch.资产引用
+                    .map((ref) => ({ 编号: String(ref.编号 || "").trim(), 用途: String(ref.用途 || "").trim(), ...(ref.变体 ? { 变体: String(ref.变体).trim() } : {}), ...(Array.isArray(ref.文件) ? { 文件: ref.文件.map(String).map((file) => file.trim()).filter(Boolean) } : {}), ...(ref.参考职责 ? { 参考职责: String(ref.参考职责).trim() } : {}), ...(ref.参考优先级 ? { 参考优先级: String(ref.参考优先级).trim() } : {}) }))
+                    .filter((ref) => ref.编号 && ref.用途)
+                : undefined;
+            byNumber.set(number, {
+                ...current,
+                ...(Array.isArray(patch.所需资产) ? { 所需资产: [...new Set(patch.所需资产.map(String).filter(Boolean))] } : {}),
+                ...(assetRefs ? { 资产引用: assetRefs, 所需资产: [...new Set(assetRefs.map((ref) => ref.编号))] } : {}),
+                ...(typeof patch.质检标准 === "string" ? { 质检标准: patch.质检标准.trim() } : {}),
+            });
+        }
+        const updated = (board.镜头 || []).map((shot) => byNumber.get(shot.镜号) || shot);
+        await upsertEpisodeBoard(token, project, { ...board, 集: episode, 镜头: updated });
+        invalidateAssetKeyframes(project);
+        return { episode, updated: patches.map((patch) => Number(patch.镜号)) };
+    },
+
     // 23. 导出分集分镜稿＋归档分镜图到 分集/<ep>/shots/
     drama_episode_export: async (args) => {
         const token = requireBridgeToken();
         const project = assetProjectArg(args);
         const episode = String(args.episode || "");
         if (!episode) throw new Error("episode 必填（如 ep01）");
-        const projectData = useDramaStore.getState().projects.find((item) => item.title === project);
+        const projectData = useDramaStore.getState().projects.find((item) => item.assetProject === project || item.title === project);
         if (!projectData) throw new Error(`项目不在浏览器工作区：${project}`);
         // 回写分集时按镜号保留清单侧全部策划字段（场景/音效/音乐/帧类型/情绪强度/所属节拍/质检标准/所需资产），
         // 否则一次导出就会冲掉这些不在浏览器工作区里的字段；浏览器侧字段（描述/对白/旁白/秒/镜头语言/导演字段）以工作区为准覆盖
+        const assetIds = await publishPlannedAssets(token, project, episode, projectData.plannedAssets || [], projectData.shots);
         const manifestNow = await fetchAssetManifest(token, project);
         const oldBoard = (manifestNow.分集 || []).find((item) => item.集 === episode);
         const oldShots = new Map((oldBoard?.镜头 || []).map((item) => [item.镜号, item]));
@@ -750,6 +1023,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
             return {
                 ...(old || {}),
                 镜号: index + 1,
+                场景: shot.location,
                 描述: shot.description,
                 对白: shot.dialogue,
                 旁白: shot.narration,
@@ -762,12 +1036,21 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
                 出场角色: shot.characters,
                 出图提示词: shot.imagePrompt,
                 图生视频提示词: shot.videoPrompt,
-                所需资产: old?.所需资产 || [],
+                原文证据: shot.sourceEvidence,
+                叙事时点: shot.storyTime,
+                镜头职责: shot.shotPurpose,
+                起始状态: shot.startState,
+                结束状态: shot.endState,
+                连续性: shot.continuity,
+                质检标准: shot.qualityCriteria,
+                资产引用: shot.assetRefs?.map((ref) => ({ 编号: assetIds.get(ref.key) || ref.key, 用途: ref.purpose, 变体: ref.variant, 文件: ref.files, 参考职责: ref.referenceRole, 参考优先级: ref.referencePriority })) || old?.资产引用 || [],
+                所需资产: shot.assetRefs?.map((ref) => assetIds.get(ref.key) || ref.key) || old?.所需资产 || [],
                 产物: projectData.shotImages[shot.id] ? { 分镜图: `分集/${episode}/shots/镜头${String(index + 1).padStart(2, "0")}_分镜图.png` } : old?.产物,
             };
         });
         // 同步把分镜沉淀进清单 分集（生产数据落盘，界面「按季投产」视图直接读）
-        await upsertEpisodeBoard(token, project, { ...(oldBoard || {}), 集: episode, 镜头: boardShots });
+        const sourceCoverage = (projectData.sourceCoverage || []).map((item) => ({ 原文: item.quote, 去向: item.disposition, 镜号: item.shotNumbers, 说明: item.note }));
+        await upsertEpisodeBoard(token, project, { ...(oldBoard || {}), 集: episode, 原文覆盖: sourceCoverage, 镜头: boardShots });
         // 分镜稿：十三列制作分镜表（镜号/场景/出场角色/景别/运镜/转场/秒/画面描述/动作/情绪/对白/旁白/分镜图）
         const lines = [
             `# ${projectData.title} ${episode} 分镜稿`,
@@ -786,10 +1069,17 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
         boardShots.forEach((shot) => {
             detail.push(
                 `## 镜${shot.镜号}`,
+                `- 原文证据：${shot.原文证据 || ""}`,
+                `- 场景/时点：${shot.场景 || ""}｜${shot.叙事时点 || ""}`,
+                `- 镜头职责：${shot.镜头职责 || ""}`,
+                `- 起始态：${shot.起始状态 || ""}`,
+                `- 结束态：${shot.结束状态 || ""}`,
+                `- 连续性：${shot.连续性 || ""}`,
                 `- 帧类型：${shot.帧类型 || ""}｜情绪强度：${shot.情绪强度 || ""}｜所属节拍：${shot.所属节拍 || ""}`,
                 `- 音效：${shot.音效 || ""}`,
                 `- 音乐：${shot.音乐 || ""}`,
                 `- 所需资产：${(shot.所需资产 || []).join("、")}`,
+                `- 资产用法：${(shot.资产引用 || []).map((ref) => `${ref.编号}=${ref.用途 || ""}${ref.变体 ? `(${ref.变体})` : ""}${ref.文件?.length ? `[${ref.文件.join("/")}]` : ""}`).join("；")}`,
                 `- 出图提示词：${shot.出图提示词 || "（未写，生成时回落为画面描述＋动作）"}`,
                 `- 图生视频提示词：${shot.图生视频提示词 || "（未写，生成时回落为画面描述＋动作）"}`,
                 `- 质检标准：${shot.质检标准 || ""}`,
@@ -797,6 +1087,15 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
             );
         });
         await writeAssetProjectFile(token, project, `分集/${episode}/提示词与质检.md`, detail.join("\n"));
+        const coverage = [
+            `# ${projectData.title} ${episode} 原文覆盖台账`,
+            "",
+            "| 原文证据 | 去向 | 镜号 | 说明 |",
+            "|---|---|---|---|",
+            ...sourceCoverage.map((item) => `| ${item.原文.replace(/\|/g, "｜")} | ${item.去向} | ${(item.镜号 || []).join("、")} | ${(item.说明 || "").replace(/\|/g, "｜")} |`),
+            "",
+        ];
+        await writeAssetProjectFile(token, project, `分集/${episode}/原文覆盖台账.md`, coverage.join("\n"));
         let archived = 0;
         for (const [index, shot] of projectData.shots.entries()) {
             const media = projectData.shotImages[shot.id];
@@ -805,7 +1104,7 @@ const BRIDGE_TOOLS: Record<string, (args: Record<string, unknown>) => unknown> =
                 const url = await resolveMediaUrl(media.storageKey, media.url);
                 const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
                 if (!response.ok) continue;
-                await writeAssetProjectFile(token, project, `分集/${episode}/shots/镜头${String(index + 1).padStart(2, "0")}_分镜图.png`, await blobToBase64(await response.blob()));
+                await writeAssetProjectBinaryFile(token, project, `分集/${episode}/shots/镜头${String(index + 1).padStart(2, "0")}_分镜图.png`, await blobToBase64(await response.blob()));
                 archived += 1;
             } catch {
                 // 单镜归档失败不阻断导出
@@ -820,13 +1119,22 @@ registerRefresh(() => void useConfigStore.getState().loadPublicSettings());
 
 // 模块加载即按持久化配置自启（设置弹窗挂在全局导航，任意页面都会加载本模块，保持连接不因路由切换断开）
 if (typeof window !== "undefined") {
-    const config = loadBridgeConfig();
-    if (config.enabled) {
-        qoderRuntime.connectWanted = true;
-        openSocket(qoderRuntime);
-    }
-    if (config.chatGPTEnabled) {
-        chatGPTRuntime.connectWanted = true;
-        openSocket(chatGPTRuntime);
+    // 跨端口迁移会在隐藏 iframe 中加载此模块；该桥接页只能搬数据，绝不能抢占可见主页面的 MCP 连接。
+    const isStoragePortBridge = window.location.pathname.startsWith("/storage-port-bridge");
+    if (!isStoragePortBridge) {
+        const config = loadBridgeConfig();
+        if (config.enabled) {
+            qoderRuntime.connectWanted = true;
+            openSocket(qoderRuntime);
+        }
+        if (config.chatGPTEnabled) {
+            requestChannelRegistration(chatGPTRuntime, true, config.chatGPTToken);
+            chatGPTRuntime.connectWanted = true;
+            openSocket(chatGPTRuntime);
+        } else if (window.location.hostname === "127.0.0.1") {
+            void fetchChatGPTChannelStatus().then((status) => {
+                if (status.registered && !loadBridgeConfig().chatGPTEnabled) setChatGPTBridgeEnabled(true);
+            }).catch(() => {});
+        }
     }
 }

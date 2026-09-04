@@ -1,13 +1,18 @@
 "use client";
 
 import { CheckCircle2, Circle, Clapperboard, FileText, Image as ImageIcon, LoaderCircle, Mic, Pause, Play, RotateCcw, SkipForward, Square, User, XCircle } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { App, Button, Drawer, Progress, Select, Switch, Tag } from "antd";
 
 import { DEFAULT_DIRECTOR_OPTIONS } from "@/app/(user)/drama/services/director-planner";
 import { maybeRestartDirector, startDirector } from "@/app/(user)/drama/services/director-runner";
+import { approvedRepresentativeIds, representativeShotIds } from "@/app/(user)/drama/services/production-readiness";
+import { reviewShots } from "@/app/(user)/drama/services/drama-review";
+import { checkEpisodeAssets } from "@/services/api/drama-assets";
 import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
 import { useDirectorStore, type DirectorPlan, type DirectorTask, type DirectorTaskKind } from "@/stores/use-director-store";
+import { getEffectiveConfig } from "@/stores/use-config-store";
+import { useUserStore } from "@/stores/use-user-store";
 
 const KIND_META: Record<DirectorTaskKind, { label: string; step: number; icon: typeof FileText }> = {
     script: { label: "剧本结构化", step: 0, icon: FileText },
@@ -35,16 +40,31 @@ export function DirectorDrawer({ project, open, onClose }: { project: DramaProje
     const skipTask = useDirectorStore((state) => state.skipTask);
     const retryTask = useDirectorStore((state) => state.retryTask);
     const updateProject = useDramaStore((state) => state.updateProject);
+    const token = useUserStore((state) => state.token);
+    const [preflighting, setPreflighting] = useState(false);
 
     // 打开且无计划时自动基于当前项目状态生成草稿计划（刷新恢复后已有计划则直接展示）
     useEffect(() => {
         if (open && hydrated && !useDirectorStore.getState().plans[project.id]) buildPlan(project.id, DEFAULT_DIRECTOR_OPTIONS);
     }, [open, hydrated, project.id, buildPlan]);
 
-    const confirm = () => {
+    const confirm = async () => {
         if (runningProjectId && runningProjectId !== project.id) return message.warning("有其他项目正在自动生产，请先终止后再开始");
-        confirmPlan(project.id);
-        startDirector(project.id);
+        if (!token) return message.warning("严格资产模式需要先登录");
+        setPreflighting(true);
+        try {
+            const review = await reviewShots(project, getEffectiveConfig());
+            if (review.semanticError) return message.error(`语义审查未完成：${review.semanticError}`);
+            if (review.verdict !== "pass") return message.warning(`分镜审查未通过：${review.findings.slice(0, 3).map((finding) => finding.location).join("、")}`);
+            const check = await checkEpisodeAssets(token, project.assetProject || project.title, project.episode || "ep01");
+            if (!check.可开工) return message.warning("资产清单开工检查未通过，请先处理未确认版本、缺失文件和逐镜引用");
+            confirmPlan(project.id);
+            startDirector(project.id);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "生产前检查失败");
+        } finally {
+            setPreflighting(false);
+        }
     };
 
     const abort = () =>
@@ -71,23 +91,25 @@ export function DirectorDrawer({ project, open, onClose }: { project: DramaProje
             ) : plan.status === "running" || plan.status === "paused" ? (
                 <RunningView plan={plan} progress={progress} onPause={() => pauseRun(project.id)} onResume={() => { resumeRun(project.id); startDirector(project.id); }} onAbort={abort} onSkip={(taskId) => { skipTask(project.id, taskId); maybeRestartDirector(project.id); }} onRetry={(taskId) => { retryTask(project.id, taskId); maybeRestartDirector(project.id); }} />
             ) : plan.status === "done" || plan.status === "aborted" ? (
-                <DoneView plan={plan} aborted={plan.status === "aborted"} onReplan={() => buildPlan(project.id, plan.options)} onRetry={(taskId) => { retryTask(project.id, taskId); maybeRestartDirector(project.id); }} onGotoStep={gotoStep} />
+                <DoneView plan={plan} aborted={plan.status === "aborted"} onContinue={() => { resumeRun(project.id); startDirector(project.id); }} onReplan={() => buildPlan(project.id, plan.options)} onRetry={(taskId) => { retryTask(project.id, taskId); maybeRestartDirector(project.id); }} onGotoStep={gotoStep} />
             ) : (
-                <DraftView plan={plan} busyProjectId={runningProjectId} onOptionsChange={(patch) => buildPlan(project.id, { ...plan.options, ...patch })} onConfirm={confirm} />
+                <DraftView project={project} plan={plan} busyProjectId={runningProjectId} preflighting={preflighting} onOptionsChange={(patch) => buildPlan(project.id, { ...plan.options, ...patch })} onConfirm={() => void confirm()} />
             )}
         </Drawer>
     );
 }
 
 // 计划预览态：选项开关 + 成本预估卡 + 任务分组清单，单次确认后开始
-function DraftView({ plan, busyProjectId, onOptionsChange, onConfirm }: { plan: DirectorPlan; busyProjectId: string | null; onOptionsChange: (patch: Partial<DirectorPlan["options"]>) => void; onConfirm: () => void }) {
+function DraftView({ project, plan, busyProjectId, preflighting, onOptionsChange, onConfirm }: { project: DramaProject; plan: DirectorPlan; busyProjectId: string | null; preflighting: boolean; onOptionsChange: (patch: Partial<DirectorPlan["options"]>) => void; onConfirm: () => void }) {
     const pendingCount = plan.tasks.filter((task) => task.status === "pending").length;
     const doneCount = plan.tasks.filter((task) => task.status === "success").length;
     const hasScriptTask = plan.tasks.some((task) => task.kind === "script" && task.status === "pending");
+    const representatives = representativeShotIds(project);
+    const keyframeGateReady = representatives.length > 0 && approvedRepresentativeIds(project).length === representatives.length;
     return (
         <div className="space-y-5 text-stone-800 dark:text-stone-100">
             <p className="text-sm leading-6 text-stone-500 dark:text-stone-400">
-                按「立绘 → 分镜图 → 视频 ∥ 配音」的依赖流水线自动执行各步骤；产物写入现有步骤页面，可随时暂停、终止或单独重试。
+                按「资产确认 → 代表关键帧 → 人工验收 → 分镜批产 → 视频 ∥ 配音」执行。代表帧未确认时，自动生产只派发小样任务。
             </p>
 
             <div className="space-y-3 border border-stone-200 bg-stone-50/60 p-4 dark:border-stone-800 dark:bg-stone-900/40">
@@ -144,10 +166,11 @@ function DraftView({ plan, busyProjectId, onOptionsChange, onConfirm }: { plan: 
             </div>
 
             {hasScriptTask ? <p className="text-xs text-amber-600 dark:text-amber-500">提示：本次包含剧本结构化，执行后将重置分镜与已生成媒体。</p> : null}
+            {!keyframeGateReady && project.shots.length ? <p className="border border-amber-500/35 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300">当前为代表帧小样阶段：仅生成 {representatives.length} 个高风险镜头，不产生视频和配音。请到“关键帧 / 分镜”逐张确认后重新规划。</p> : null}
             {busyProjectId && busyProjectId !== plan.projectId ? <p className="text-xs text-red-500">有其他项目正在自动生产，请先终止后再开始。</p> : null}
 
-            <Button type="primary" block size="large" disabled={!pendingCount} onClick={onConfirm}>
-                {pendingCount ? `确认并开始（${pendingCount} 个任务）` : "全部产物已就绪，无需执行"}
+            <Button type="primary" block size="large" loading={preflighting} disabled={!pendingCount} onClick={onConfirm}>
+                {pendingCount ? `${keyframeGateReady || !project.shots.length ? "确认并开始" : "生成代表关键帧"}（${pendingCount} 个任务）` : keyframeGateReady ? "全部产物已就绪，无需执行" : "代表帧已生成，等待逐张确认"}
             </Button>
         </div>
     );
@@ -213,10 +236,11 @@ function RunningView({ plan, progress, onPause, onResume, onAbort, onSkip, onRet
 }
 
 // 完成/终止态：结果汇总 + 失败清单快捷处理 + 重新规划
-function DoneView({ plan, aborted, onReplan, onRetry, onGotoStep }: { plan: DirectorPlan; aborted: boolean; onReplan: () => void; onRetry: (taskId: string) => void; onGotoStep: (step: number) => void }) {
+function DoneView({ plan, aborted, onContinue, onReplan, onRetry, onGotoStep }: { plan: DirectorPlan; aborted: boolean; onContinue: () => void; onReplan: () => void; onRetry: (taskId: string) => void; onGotoStep: (step: number) => void }) {
     const success = plan.tasks.filter((task) => task.status === "success").length;
     const failedTasks = plan.tasks.filter((task) => task.status === "failed");
     const skipped = plan.tasks.filter((task) => task.status === "skipped").length;
+    const pendingCount = plan.tasks.filter((task) => task.status === "pending").length;
     return (
         <div className="space-y-4 text-stone-800 dark:text-stone-100">
             <div className="flex items-center gap-2">
@@ -253,6 +277,11 @@ function DoneView({ plan, aborted, onReplan, onRetry, onGotoStep }: { plan: Dire
                 <Button type="primary" onClick={() => onGotoStep(5)}>
                     去第 6 步一键成片
                 </Button>
+                {aborted && pendingCount ? (
+                    <Button type="primary" ghost onClick={onContinue}>
+                        继续生产（待执行 {pendingCount}）
+                    </Button>
+                ) : null}
                 <Button onClick={onReplan}>重新规划</Button>
             </div>
         </div>

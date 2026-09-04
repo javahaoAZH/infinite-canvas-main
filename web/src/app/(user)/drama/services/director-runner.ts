@@ -5,8 +5,9 @@ import { getEffectiveConfig } from "@/stores/use-config-store";
 import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
 import { useDirectorStore, type DirectorTask, type DirectorTaskKind } from "@/stores/use-director-store";
 
-// 按 kind 的并发上限：文本 1 / 立绘 1 / 分镜图 2 / 视频 2 / 配音 3
-const CONCURRENCY_CAP: Record<DirectorTaskKind, number> = { script: 1, review: 1, character: 1, shotImage: 2, shotVideo: 2, audio: 3, render: 1 };
+// 按 kind 的并发上限：文本 1 / 立绘 1 / 分镜图 2 / 视频 2 / 配音 3；速度档 fast（设置-生产）时加倍
+const BASE_CONCURRENCY_CAP: Record<DirectorTaskKind, number> = { script: 1, review: 1, character: 1, shotImage: 2, shotVideo: 2, audio: 3, render: 1 };
+const concurrencyCap = (kind: DirectorTaskKind) => (getEffectiveConfig().renderSpeed === "fast" ? BASE_CONCURRENCY_CAP[kind] * 2 : BASE_CONCURRENCY_CAP[kind]);
 
 // 自动重试退避：2s / 5s
 const BACKOFF_MS = [2000, 5000];
@@ -69,7 +70,7 @@ async function directorLoop(projectId: string) {
                 (task.softDeps || []).every((depId) => statusById.get(depId) === "success" || statusById.get(depId) === "skipped" || statusById.get(depId) === "failed");
             if (!ready) continue;
             const runningCount = current.tasks.filter((item) => item.kind === task.kind && item.status === "running").length + (dispatched.get(task.kind) || 0);
-            if (runningCount >= CONCURRENCY_CAP[task.kind]) continue;
+            if (runningCount >= concurrencyCap(task.kind)) continue;
             dispatched.set(task.kind, (dispatched.get(task.kind) || 0) + 1);
             void runTask(projectId, task.id);
         }

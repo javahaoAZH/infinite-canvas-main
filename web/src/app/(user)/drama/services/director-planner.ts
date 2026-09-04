@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 
+import { approvedRepresentativeIds, representativeShotIds } from "@/app/(user)/drama/services/production-readiness";
 import type { DramaProject } from "@/stores/use-drama-store";
 import type { DirectorPlan, DirectorPlanOptions, DirectorTask, DirectorTaskStatus } from "@/stores/use-director-store";
 
@@ -20,6 +21,8 @@ function newTask(kind: DirectorTask["kind"], subjectId: string, label: string, d
 // 任务分解 + 成本预估；已有产物直接标 success（幂等：重跑只补缺口）
 export function buildDirectorPlan(project: DramaProject, options: DirectorPlanOptions): DirectorPlan {
     const tasks: DirectorTask[] = [];
+    const representativeIds = new Set(representativeShotIds(project));
+    const representativeGateReady = representativeIds.size > 0 && approvedRepresentativeIds(project).length === representativeIds.size;
     // 分镜为空时含剧本结构化任务（会重置分镜与已生成媒体）；已有分镜则跳过
     const scriptDeps: string[] = [];
     if (!project.shots.length) {
@@ -37,9 +40,12 @@ export function buildDirectorPlan(project: DramaProject, options: DirectorPlanOp
         characterTaskIds.push(task.id);
     });
     project.shots.forEach((shot, index) => {
+        if (!representativeGateReady && !representativeIds.has(shot.id)) return;
         const label = `分镜 ${index + 1}`;
         const imageTask = newTask("shotImage", shot.id, `${label} · 分镜图`, [...scriptDeps, ...characterTaskIds], false, project.shotImages[shot.id] ? "success" : "pending");
         tasks.push(imageTask);
+        // 代表帧未逐张确认前只生成高风险小样，不派发视频和配音，避免错误画风或资产被批量放大。
+        if (!representativeGateReady) return;
         // 对白配音先于视频创建：对白镜视频要回喂配音走对口型工作流（A2）
         let dialogueAudioTask: DirectorTask | undefined;
         if (options.includeAudio && shot.dialogue.trim()) {

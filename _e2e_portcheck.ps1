@@ -1,4 +1,4 @@
-foreach ($p in 8080, 3000) {
+foreach ($p in 18080, 3000) {
     $c = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
     if ($c) {
         foreach ($x in $c) {

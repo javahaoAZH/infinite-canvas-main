@@ -1,21 +1,20 @@
 "use client";
 
-import { ArrowRight } from "lucide-react";
+import { Drama, Folder } from "lucide-react";
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
-import { App, Button, Image, Tag } from "antd";
+import { App, Modal } from "antd";
 import { nanoid } from "nanoid";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { fetchPrompts, type Prompt } from "@/services/api/prompts";
 import { cn } from "@/lib/utils";
 import { uploadAssetMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
 import { useEffectiveConfig } from "@/stores/use-config-store";
+import { useDramaStore } from "@/stores/use-drama-store";
 import { AssetPickerModal } from "./canvas/components/asset-picker-modal";
 import { CanvasAssistantComposer } from "./canvas/components/canvas-assistant-composer";
 import { useCanvasStore } from "./canvas/stores/use-canvas-store";
-import { canvasResourceLabel } from "./canvas/utils/canvas-resource-references";
-import { HomeBannerCarousel, type HomeBanner } from "./home-banner-carousel";
 import {
     CanvasNodeType,
     type CanvasAgentConfig,
@@ -23,15 +22,7 @@ import {
     type InsertAssetPayload,
     type PendingAgentAsset,
 } from "./canvas/types";
-
-
-const HOME_BANNERS: HomeBanner[] = [
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.6/img/infinite-canvas/metaso.webp", videoUrl: "", linkUrl: "https://metaso.cn/minimax-h3/?s=tt", alt: "1" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.5/img/infinite-canvas/3ddirectortl.webp", videoUrl: "", linkUrl: "", alt: "2" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/agent.webp", videoUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/agent.webm", linkUrl: "", alt: "3" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/panorama.webp", videoUrl: "", linkUrl: "", alt: "4" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/3ddirector.webp", videoUrl: "", linkUrl: "", alt: "5" },
-];
+import { canvasResourceLabel } from "./canvas/utils/canvas-resource-references";
 
 function toPendingAgentAsset(payload: InsertAssetPayload, label: string): PendingAgentAsset {
     const nodeId = nanoid();
@@ -47,19 +38,20 @@ function toPendingAgentAsset(payload: InsertAssetPayload, label: string): Pendin
     return { nodeId, payload, reference };
 }
 
+// 首页＝Codex 新对话形态：居中 composer + 最近项目列表；轮播与提示词画廊移至侧栏「探索」
 export default function IndexPage() {
     const { message } = App.useApp();
     const router = useRouter();
     const effectiveConfig = useEffectiveConfig();
     const createProject = useCanvasStore((state) => state.createProject);
     const hydrated = useCanvasStore((state) => state.hydrated);
-    const [promptShowcase, setPromptShowcase] = useState<Prompt[]>([]);
-    const [previewIndex, setPreviewIndex] = useState(0);
-    const [previewOpen, setPreviewOpen] = useState(false);
+    const canvasProjects = useCanvasStore((state) => state.projects);
+    const dramaProjects = useDramaStore((state) => state.projects);
     const [prompt, setPrompt] = useState("");
     const [pendingAssets, setPendingAssets] = useState<PendingAgentAsset[]>([]);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [submitting, setSubmitting] = useState(false);
+    const [targetProjectId, setTargetProjectId] = useState("");
     const [agentConfig, setAgentConfig] = useState<CanvasAgentConfig>(() => ({
         imageQuality: effectiveConfig.quality,
         imageSize: effectiveConfig.size,
@@ -69,11 +61,23 @@ export default function IndexPage() {
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const pendingAssetCountsRef = useRef<Record<InsertAssetPayload["kind"], number>>({ text: 0, image: 0, video: 0, audio: 0 });
 
+    // A#32 首启引导：仅首次启动展示三步引导
     useEffect(() => {
-        void fetchPrompts({ pageSize: 12 })
-            .then((data) => setPromptShowcase(data.items))
-            .catch((error) => message.error(error instanceof Error ? error.message : "获取提示词失败"));
-    }, [message]);
+        if (localStorage.getItem("infinite-canvas:onboarded")) return;
+        localStorage.setItem("infinite-canvas:onboarded", "1");
+        Modal.info({
+            title: "欢迎使用无限画布",
+            width: 480,
+            okText: "开始创作",
+            content: (
+                <ol className="mt-2 space-y-2 text-sm leading-6 text-stone-600 dark:text-stone-300">
+                    <li>1. 在输入框描述创作目标，Agent 会自主创建画布并生成分镜与图片</li>
+                    <li>2. 到「设置 → 模型渠道」配置你的 API Key 与默认模型（底行也可直接切换）</li>
+                    <li>3. 用「AI 漫剧」把小说一路推进到成片</li>
+                </ol>
+            ),
+        });
+    }, []);
 
     const addPendingAsset = (payload: InsertAssetPayload) => {
         const asset = toPendingAgentAsset(payload, canvasResourceLabel(payload.kind, pendingAssetCountsRef.current[payload.kind]++));
@@ -112,85 +116,89 @@ export default function IndexPage() {
             return;
         }
         setSubmitting(true);
+        const agentRequest = { prompt: text, assets: pendingAssets.filter((asset) => referenceIds.includes(asset.nodeId)) };
+        if (targetProjectId) {
+            // 目标为已有画布：注入 Agent 请求后直接进入该项目
+            useCanvasStore.getState().updateProject(targetProjectId, { agentConfig, pendingAgentRequest: agentRequest });
+            router.push(`/canvas/view?id=${targetProjectId}`);
+            return;
+        }
         const titles = new Set(useCanvasStore.getState().projects.map(({ title }) => title));
         let title = "无限画布";
         for (let i = 1; titles.has(title); i++) title = `无限画布 ${i}`;
         const projectId = createProject(title, {
             agentConfig,
-            pendingAgentRequest: { prompt: text, assets: pendingAssets.filter((asset) => referenceIds.includes(asset.nodeId)) },
+            pendingAgentRequest: agentRequest,
         });
         router.push(`/canvas/view?id=${projectId}`);
     };
 
     return (
-        <main className="relative h-full overflow-x-hidden overflow-y-auto bg-background bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px] text-stone-950 dark:bg-[radial-gradient(rgba(245,245,244,.18)_1px,transparent_1px)] dark:text-stone-100">
-            <section className="relative mx-auto min-h-[calc(100vh-4rem)] max-w-7xl px-6">
-                <section className="relative flex min-h-[620px] flex-col items-center justify-center py-10 sm:py-14">
-                    <HomeBannerCarousel banners={HOME_BANNERS} />
-                    <div className="mt-12 w-full max-w-[820px]">
-                        <CanvasAssistantComposer
-                            prompt={prompt}
-                            isRunning={false}
-                            references={pendingAssets.map((asset) => asset.reference)}
-                            agentConfig={agentConfig}
-                            onAgentConfigChange={(patch) => setAgentConfig((current) => ({ ...current, ...patch }))}
-                            onPromptChange={setPrompt}
-                            onReferenceIdsChange={(ids) => setPendingAssets((current) => current.filter((asset) => ids.includes(asset.nodeId)))}
-                            onSubmit={submit}
-                            onOpenUpload={() => uploadInputRef.current?.click()}
-                            onOpenAssets={() => setAssetPickerOpen(true)}
-                            onPasteImage={(file) => void uploadFile(file)}
-                        />
-                    </div>
+        <main className="h-full overflow-y-auto bg-background">
+            <div className="mx-auto flex min-h-full w-full max-w-[820px] flex-col items-center justify-center px-6 py-10">
+                <div className="w-full">
+                    <CanvasAssistantComposer
+                        prompt={prompt}
+                        isRunning={false}
+                        references={pendingAssets.map((asset) => asset.reference)}
+                        agentConfig={agentConfig}
+                        onAgentConfigChange={(patch) => setAgentConfig((current) => ({ ...current, ...patch }))}
+                        targetProjectId={targetProjectId}
+                        onTargetProjectChange={setTargetProjectId}
+                        onPromptChange={setPrompt}
+                        onReferenceIdsChange={(ids) => setPendingAssets((current) => current.filter((asset) => ids.includes(asset.nodeId)))}
+                        onSubmit={submit}
+                        onOpenUpload={() => uploadInputRef.current?.click()}
+                        onOpenAssets={() => setAssetPickerOpen(true)}
+                        onPasteImage={(file) => void uploadFile(file)}
+                    />
                     <input ref={uploadInputRef} hidden type="file" accept="image/*,video/*,audio/*" onChange={onUploadInputChange} />
-                </section>
+                </div>
 
-                <section className="relative mx-auto mb-20 max-w-6xl border-t border-stone-200 pt-12 dark:border-stone-800">
-                    <div className="mb-8 grid gap-4 md:grid-cols-[1fr_auto_1fr] md:items-start">
-                        <div />
-                        <div className="max-w-2xl text-center">
-                            <div className="flex flex-wrap items-center justify-center gap-3">
-                                <h2 className="text-3xl font-semibold text-stone-950 dark:text-stone-100">沉淀每一次好结果</h2>
-                                <Button type="primary" size="middle" href="https://prompts.tdeh.top/" target="_blank" className="-translate-y-[6px]">提示词仓库</Button>
-                            </div>
-                            <p className="mt-3 text-base leading-7 text-stone-500 dark:text-stone-400">收藏稳定出图的提示词、参考风格和结果图片，让下一次创作从已有经验开始。</p>
-                        </div>
-                        <Button type="link" href="/prompts" className="justify-self-center md:justify-self-end" icon={<ArrowRight className="size-4" />} iconPlacement="end">
-                            提示词库
-                        </Button>
-                    </div>
-                    <div className="grid auto-rows-[210px] gap-4 md:grid-cols-4">
-                        {promptShowcase.map((item, index) => (
+                {effectiveConfig.showSuggestions !== "" ? (
+                    <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+                        {["把这段小说改成 27 镜分镜", "给镜头 1 生成首帧", "做一支 15 秒宣传片", "整理我的素材库"].map((suggestion, index) => (
                             <button
-                                key={item.id}
+                                key={suggestion}
                                 type="button"
-                                onClick={() => {
-                                    setPreviewIndex(index);
-                                    setPreviewOpen(true);
-                                }}
-                                className={cn(
-                                    "group relative cursor-pointer overflow-hidden border border-stone-200 bg-stone-100 text-left dark:border-stone-800 dark:bg-stone-900",
-                                    index === 0 && "md:col-span-2 md:row-span-2",
-                                    index === 3 && "md:col-span-2",
-                                )}
+                                onClick={() => setPrompt(suggestion)}
+                                style={{ animationDelay: `${index * 90}ms` }}
+                                className="composer-suggestion h-8 rounded-full border border-border/70 px-3 text-xs text-muted-foreground transition-colors hover:bg-foreground/8 hover:text-foreground"
                             >
-                                <img src={item.coverUrl} alt={item.title} className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]" />
-                                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/35 to-transparent p-4 text-white">
-                                    <div className="mb-2 flex flex-wrap gap-1.5">
-                                        {item.tags.slice(0, 2).map((tag) => (
-                                            <Tag key={tag} variant="filled" className="m-0 bg-white/15 text-[11px] text-white backdrop-blur">
-                                                {tag}
-                                            </Tag>
-                                        ))}
-                                    </div>
-                                    <h3 className="text-sm font-medium">{item.title}</h3>
-                                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-white/75">{item.prompt}</p>
-                                </div>
+                                {suggestion}
                             </button>
                         ))}
                     </div>
-                </section>
-            </section>
+                ) : null}
+
+                <div className="mt-10 w-full">
+                    <div className="mb-1.5 px-3 text-xs text-muted-foreground">最近</div>
+                    <div className="flex flex-col gap-0.5">
+                        {canvasProjects.slice(0, 5).map((project) => (
+                            <Link
+                                key={project.id}
+                                href={`/canvas/view?id=${project.id}`}
+                                className={cn("flex h-10 items-center gap-2.5 rounded-lg px-3 text-sm text-muted-foreground transition-colors hover:bg-foreground/8 hover:text-foreground")}
+                            >
+                                <Folder className="size-4 shrink-0" />
+                                <span className="truncate">{project.title}</span>
+                                <span className="ml-auto shrink-0 text-xs opacity-60">{new Date(project.updatedAt).toLocaleDateString()}</span>
+                            </Link>
+                        ))}
+                        {dramaProjects.slice(0, 3).map((project) => (
+                            <Link
+                                key={project.id}
+                                href="/drama"
+                                className={cn("flex h-10 items-center gap-2.5 rounded-lg px-3 text-sm text-muted-foreground transition-colors hover:bg-foreground/8 hover:text-foreground")}
+                            >
+                                <Drama className="size-4 shrink-0" />
+                                <span className="truncate">{project.title}</span>
+                            </Link>
+                        ))}
+                        {!canvasProjects.length && !dramaProjects.length ? <div className="px-3 py-2 text-xs text-muted-foreground">暂无最近项目，输入创作目标开始</div> : null}
+                    </div>
+                </div>
+            </div>
             <AssetPickerModal
                 open={assetPickerOpen}
                 defaultTab="my-assets"
@@ -199,18 +207,6 @@ export default function IndexPage() {
                     setAssetPickerOpen(false);
                 }}
                 onClose={() => setAssetPickerOpen(false)}
-            />
-            <Image.PreviewGroup
-                items={promptShowcase.map((item) => ({
-                    src: item.coverUrl,
-                    alt: item.title,
-                }))}
-                preview={{
-                    open: previewOpen,
-                    current: previewIndex,
-                    onOpenChange: setPreviewOpen,
-                    onChange: setPreviewIndex,
-                }}
             />
         </main>
     );

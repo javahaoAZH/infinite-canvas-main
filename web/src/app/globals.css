@@ -42,78 +42,85 @@
     --color-popover: var(--popover);
     --color-card-foreground: var(--card-foreground);
     --color-card: var(--card);
-    --radius-2xl: calc(var(--radius) * 1.8);
-    --radius-3xl: calc(var(--radius) * 2.2);
-    --radius-4xl: calc(var(--radius) * 2.6);
+    --radius-2xl: 1rem;
+    --radius-3xl: 1.25rem;
+    --radius-4xl: 1.5rem;
+    --color-border-subtle: var(--border-subtle);
+    --color-border-strong: var(--border-strong);
+    --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 :root {
     --radius: 0.625rem;
-    --border: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
+    --border: color-mix(in oklab, var(--foreground) 8%, transparent);
+    --border-subtle: color-mix(in oklab, var(--foreground) 5%, transparent);
+    --border-strong: color-mix(in oklab, var(--foreground) 12%, transparent);
+    --ring: #339cff;
+    --background: #ffffff;
+    --foreground: #1a1c1f;
+    --card: #ffffff;
+    --card-foreground: #1a1c1f;
+    --popover: #ffffff;
+    --popover-foreground: #1a1c1f;
+    --primary: #1a1c1f;
+    --primary-foreground: #ffffff;
+    --secondary: #f3f3f3;
+    --secondary-foreground: #1a1c1f;
+    --muted: #f3f3f3;
+    --muted-foreground: color-mix(in oklab, var(--foreground) 65%, transparent);
+    --accent: #ededed;
+    --accent-foreground: #1a1c1f;
     --destructive: oklch(0.577 0.245 27.325);
-    --input: oklch(0.922 0 0);
+    --input: color-mix(in oklab, var(--foreground) 12%, transparent);
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --sidebar: #f9f9f9;
+    --sidebar-foreground: #1a1c1f;
+    --sidebar-primary: #1a1c1f;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #ededed;
+    --sidebar-accent-foreground: #1a1c1f;
+    --sidebar-border: color-mix(in oklab, var(--foreground) 8%, transparent);
+    --sidebar-ring: #339cff;
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --border: oklch(1 0 0 / 10%);
-    --ring: oklch(0.556 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
+    --background: #181818;
+    --foreground: #dfdfdf;
+    --border: color-mix(in oklab, var(--foreground) 8%, transparent);
+    --border-subtle: color-mix(in oklab, var(--foreground) 5%, transparent);
+    --border-strong: color-mix(in oklab, var(--foreground) 12%, transparent);
+    --ring: #339cff;
+    --card: #212121;
+    --card-foreground: #dfdfdf;
+    --popover: #212121;
+    --popover-foreground: #dfdfdf;
+    --primary: #dfdfdf;
+    --primary-foreground: #181818;
+    --secondary: #282828;
+    --secondary-foreground: #dfdfdf;
+    --muted: #282828;
+    --muted-foreground: color-mix(in oklab, var(--foreground) 70%, transparent);
+    --accent: #282828;
+    --accent-foreground: #dfdfdf;
     --destructive: oklch(0.704 0.191 22.216);
-    --input: oklch(1 0 0 / 15%);
+    --input: color-mix(in oklab, var(--foreground) 12%, transparent);
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --sidebar: #000000;
+    --sidebar-foreground: #dfdfdf;
+    --sidebar-primary: #dfdfdf;
+    --sidebar-primary-foreground: #181818;
+    --sidebar-accent: #282828;
+    --sidebar-accent-foreground: #dfdfdf;
+    --sidebar-border: color-mix(in oklab, var(--foreground) 8%, transparent);
+    --sidebar-ring: #339cff;
 }
 
 @layer base {
@@ -403,6 +410,88 @@
         border-radius: 18px;
         box-shadow: 0 18px 54px rgba(28, 25, 23, 0.16);
         padding: 18px;
+    }
+
+    /* 首页建议 chips：错落淡入上浮（A#24），prefers-reduced-motion 降级 */
+    @keyframes composer-suggestion-in {
+        from {
+            opacity: 0;
+            transform: translateY(6px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .composer-suggestion {
+        animation: composer-suggestion-in 0.4s ease both;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .composer-suggestion {
+            animation: none;
+        }
+    }
+
+    /* ===== Codex 对标样式 token 层（批次 B）：过渡时长 / alpha 阶梯 / 骨架 shimmer / 全局滚动条 / 毛玻璃弹层 ===== */
+    :root {
+        --transition-fast: 150ms ease;
+        --transition-base: 220ms ease;
+        --transition-slow: 360ms ease;
+        --alpha-hover: 0.08;
+        --alpha-active: 0.12;
+        --alpha-border: 0.16;
+        --alpha-disabled: 0.45;
+    }
+
+    /* B#10 启动/加载 shimmer：logo 或骨架占位复用 */
+    @keyframes shimmer-sweep {
+        from {
+            background-position: -200% 0;
+        }
+        to {
+            background-position: 200% 0;
+        }
+    }
+
+    .shimmer {
+        background: linear-gradient(100deg, rgba(127, 127, 127, 0.08) 40%, rgba(127, 127, 127, 0.2) 50%, rgba(127, 127, 127, 0.08) 60%);
+        background-size: 200% 100%;
+        animation: shimmer-sweep 1.4s linear infinite;
+    }
+
+    /* B#8 滚动条全局统一：细轨 + alpha 拇指，全局生效；.thin-scrollbar 仍可供局部覆盖 */
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(127, 127, 127, 0.35) transparent;
+    }
+
+    *::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+
+    *::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgba(127, 127, 127, 0.35);
+    }
+
+    *::-webkit-scrollbar-thumb:hover {
+        background: rgba(127, 127, 127, 0.55);
+    }
+
+    *::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    /* B#11 毛玻璃弹层：antd 弹层统一 backdrop-filter（对齐 Codex 同款质感） */
+    .ant-modal-content,
+    .ant-dropdown-menu,
+    .ant-select-dropdown,
+    .ant-drawer-content {
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
     }
 
     .canvas-image-settings-popover .ant-popover-inner-content {

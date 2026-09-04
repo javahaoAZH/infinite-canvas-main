@@ -1,14 +1,15 @@
 "use client";
 
-import { Film, LoaderCircle, Music2, Send, Video } from "lucide-react";
+import { Film, LoaderCircle, Music2, Send, Square, Video } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { App, Button, Empty, Progress, Tag } from "antd";
+import { Alert, App, Button, Empty, Progress, Tag } from "antd";
 import { nanoid } from "nanoid";
 import { useRouter } from "next/navigation";
 
 import { CanvasNodeType, type CanvasNodeData, type InsertAssetPayload } from "@/app/(user)/canvas/types";
 import { useCanvasStore } from "@/app/(user)/canvas/stores/use-canvas-store";
 import { createDramaRender, generateVoiceAudio } from "@/app/(user)/drama/services/drama-generation";
+import { approvedRepresentativeIds, representativeShotIds } from "@/app/(user)/drama/services/production-readiness";
 import { getRenderTask, isAuthedRenderOutputUrl, RENDER_POLL_INTERVAL_MS, type RenderTaskResponse } from "@/services/api/render";
 import { useRenderOutputUrl } from "@/hooks/use-render-output-url";
 import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
@@ -31,6 +32,8 @@ export function VoiceStep({ project }: { project: DramaProject }) {
     const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [batchRunning, setBatchRunning] = useState(false);
+    // 批量停止开关：置 true 后不再派发新任务，在途请求自然结束（与导演台「终止」同语义）
+    const batchCancelRef = useRef(false);
     const [renderTask, setRenderTask] = useState<RenderTaskResponse | null>(null);
     const [renderSubmitting, setRenderSubmitting] = useState(false);
     const [renderError, setRenderError] = useState("");
@@ -46,6 +49,14 @@ export function VoiceStep({ project }: { project: DramaProject }) {
         ...(shot.dialogue.trim() ? [{ shotId: shot.id, shotIndex: index, kind: "dialogue" as const, text: shot.dialogue.trim() }] : []),
         ...((shot.narration || "").trim() ? [{ shotId: shot.id, shotIndex: index, kind: "narration" as const, text: (shot.narration || "").trim() }] : []),
     ]);
+    const representativeIds = representativeShotIds(project);
+    const approvedIds = approvedRepresentativeIds(project);
+    const keyframeGateReady = representativeIds.length > 0 && approvedIds.length === representativeIds.length;
+    const videoCount = project.shots.filter((shot) => project.shotVideos[shot.id]).length;
+    const audioCount = voiceRows.filter((row) => project.shotAudios[voiceAudioKey(row)]).length;
+    const missingVideoNumbers = project.shots.flatMap((shot, index) => project.shotVideos[shot.id] ? [] : [index + 1]);
+    const missingVoiceLabels = voiceRows.flatMap((row) => project.shotAudios[voiceAudioKey(row)] ? [] : [`镜${row.shotIndex + 1}${row.kind === "narration" ? "旁白" : "对白"}`]);
+    const renderReady = keyframeGateReady && missingVideoNumbers.length === 0 && missingVoiceLabels.length === 0 && project.shots.length > 0;
 
     const generateRowAudio = async (row: VoiceRow) => {
         await generateVoiceAudio(project.id, voiceAudioKey(row), effectiveConfig);
@@ -67,9 +78,11 @@ export function VoiceStep({ project }: { project: DramaProject }) {
     const runBatch = async () => {
         const pending = voiceRows.filter((row) => !project.shotAudios[voiceAudioKey(row)]);
         if (!pending.length) return message.info("没有待生成的配音（需要有对白或旁白的分镜）");
+        batchCancelRef.current = false;
         setBatchRunning(true);
         let failed = 0;
         for (const row of pending) {
+            if (batchCancelRef.current) break;
             const key = voiceAudioKey(row);
             setBusyIds((current) => ({ ...current, [key]: true }));
             setErrors((current) => ({ ...current, [key]: "" }));
@@ -83,7 +96,8 @@ export function VoiceStep({ project }: { project: DramaProject }) {
             }
         }
         setBatchRunning(false);
-        message[failed ? "warning" : "success"](failed ? `批量生成完成，${failed} 条失败，可单独重试` : "全部配音生成完成");
+        if (batchCancelRef.current) message.info("已停止批量生成：在途请求自然结束，剩余配音可随时重新发起");
+        else message[failed ? "warning" : "success"](failed ? `批量生成完成，${failed} 条失败，可单独重试` : "全部配音生成完成");
     };
 
     // 组装 InsertAssetPayload：剧本 + 分镜视频 + 分镜配音（对白与旁白），经画布导入通道写入节点
@@ -115,7 +129,7 @@ export function VoiceStep({ project }: { project: DramaProject }) {
     // 一键成片：时间线组装与任务创建已抽取为 createDramaRender（与 Qoder 通道共用），此处保留校验提示与轮询展示
     const buildFinalVideo = async () => {
         if (!token) return message.warning("请先登录后再使用一键成片");
-        if (!project.shots.some((shot) => project.shotVideos[shot.id])) return message.warning("请先生成至少一个分镜视频");
+        if (!renderReady) return message.warning("全镜视频与所需对白、旁白必须全部完成后才能成片");
         setRenderSubmitting(true);
         setRenderError("");
         setRenderTask(null);
@@ -145,14 +159,27 @@ export function VoiceStep({ project }: { project: DramaProject }) {
 
     return (
         <div className="mx-auto w-full max-w-5xl space-y-6">
+            <Alert
+                type={renderReady ? "success" : "info"}
+                showIcon
+                message={renderReady ? "G5 成片素材已齐" : "G5 成片素材检查"}
+                description={renderReady
+                    ? `全镜视频 ${videoCount}/${project.shots.length}、所需配音 ${audioCount}/${voiceRows.length}，可以提交合成。`
+                    : [
+                        !keyframeGateReady ? `代表关键帧 ${approvedIds.length}/${representativeIds.length}` : "",
+                        missingVideoNumbers.length ? `缺视频：镜${missingVideoNumbers.join("、")}` : "",
+                        missingVoiceLabels.length ? `缺配音：${missingVoiceLabels.join("、")}` : "",
+                    ].filter(Boolean).join("；")}
+            />
             <section className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm text-stone-500 dark:text-stone-400">
-                        逐条为对白与旁白生成配音（共 {voiceRows.length} 条，其中旁白 {narrationCount} 条），完成后可发送到画布或一键成片。
+                        逐条为对白与旁白生成配音（共 {voiceRows.length} 条，其中旁白 {narrationCount} 条）；全镜视频和所需音轨齐全后才允许成片。
                     </div>
-                    <Button type="primary" icon={<Music2 className="size-4" />} loading={batchRunning} onClick={() => void runBatch()}>
+                    <Button type="primary" icon={<Music2 className="size-4" />} loading={batchRunning} disabled={!keyframeGateReady} onClick={() => void runBatch()}>
                         生成全部配音
                     </Button>
+                    {batchRunning ? <Button danger icon={<Square className="size-4 fill-current" />} onClick={() => { batchCancelRef.current = true; }}>停止</Button> : null}
                 </div>
                 {voiceRows.length === 0 ? (
                     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="所有分镜都没有对白与旁白，可回到分镜步骤补充" className="py-10" />
@@ -169,7 +196,7 @@ export function VoiceStep({ project }: { project: DramaProject }) {
                                     <p className="min-w-40 flex-1 text-sm text-stone-700 dark:text-stone-200">「{row.text}」</p>
                                     {media ? <audio src={media.url} controls className="h-9 max-w-60" /> : null}
                                     {errors[key] ? <p className="w-full text-xs text-red-500">{errors[key]}</p> : null}
-                                    <Button size="small" loading={busy} onClick={() => void runSingle(row)}>
+                                    <Button size="small" loading={busy} disabled={!keyframeGateReady} onClick={() => void runSingle(row)}>
                                         {media ? "重新生成" : "生成配音"}
                                     </Button>
                                 </div>
@@ -182,13 +209,13 @@ export function VoiceStep({ project }: { project: DramaProject }) {
             <section className="border border-stone-200 bg-white/70 p-5 dark:border-stone-800 dark:bg-stone-900/50">
                 <h3 className="text-base font-semibold text-stone-900 dark:text-stone-100">产出与成片</h3>
                 <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">
-                    已生成 {Object.keys(project.shotImages).length} 张分镜图、{Object.keys(project.shotVideos).length} 个分镜视频、{Object.keys(project.shotAudios).length} 条配音。
+                    本集有效产物：{project.shots.filter((shot) => project.shotImages[shot.id]).length}/{project.shots.length} 张分镜图、{videoCount}/{project.shots.length} 个分镜视频、{audioCount}/{voiceRows.length} 条所需配音。
                 </p>
                 <div className="mt-4 flex flex-wrap gap-3">
                     <Button icon={<Send className="size-4" />} onClick={sendToCanvas}>
                         发送到画布
                     </Button>
-                    <Button type="primary" icon={<Film className="size-4" />} loading={renderSubmitting} onClick={() => void buildFinalVideo()}>
+                    <Button type="primary" icon={<Film className="size-4" />} loading={renderSubmitting} disabled={!renderReady} onClick={() => void buildFinalVideo()}>
                         一键成片
                     </Button>
                 </div>

@@ -76,7 +76,8 @@ export async function runCanvasAgent(input: RunCanvasAgentInput): Promise<RunCan
     const maxSteps = resolveMaxAgentSteps(input.config);
     let protocolMessages: CanvasAgentProtocolMessage[] = trimProtocolMessages([
         ...input.protocolMessages,
-        { role: "user" as const, content: buildUserContent(input.userText, input.references, input.config.textModel || input.config.model) },
+        // 助手模式 = 直接执行（设置-常规）时附加执行提示词，减少反向确认
+        { role: "user" as const, content: buildUserContent(`${input.userText}${input.config.assistantMode === "execute" ? "\n（直接执行模式：无需逐步向我确认，按你的判断直接执行上述目标。）" : ""}`, input.references, input.config.textModel || input.config.model) },
     ]);
 
     for (let step = 0; step < maxSteps; step++) {

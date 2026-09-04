@@ -2,18 +2,22 @@
 
 import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { App } from "antd";
 
 import { fetchUserConfig } from "@/services/api/user-config";
 import { defaultUserStorageProvider, defaultUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider } from "@/services/image-storage";
+import { migrateLegacyPortStorage } from "@/services/port-storage-migration";
 import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
+
+let portMigrationStarted = false;
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { message } = App.useApp();
     const handledConfigParams = useRef(false);
     const pathname = usePathname();
+    const router = useRouter();
     const token = useUserStore((state) => state.token);
     const user = useUserStore((state) => state.user);
     const hydrateUser = useUserStore((state) => state.hydrateUser);
@@ -21,9 +25,31 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const publicSettings = useConfigStore((state) => state.publicSettings);
     const channelMode = useConfigStore((state) => state.config.channelMode);
     const updateConfig = useConfigStore((state) => state.updateConfig);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const isLoginPage = pathname === "/login" || pathname === "/admin/login";
     const adminRemoteTokenRef = useRef("");
+
+    useEffect(() => {
+        if (portMigrationStarted) return;
+        portMigrationStarted = true;
+        const start = () => void migrateLegacyPortStorage(false, ["app_state"]).then(async ({ changed }) => {
+            if (!changed) return;
+            const [{ useDramaStore }, { useCanvasStore }, { useAssetStore }, { useDirectorStore }] = await Promise.all([
+                import("@/stores/use-drama-store"),
+                import("@/app/(user)/canvas/stores/use-canvas-store"),
+                import("@/stores/use-asset-store"),
+                import("@/stores/use-director-store"),
+            ]);
+            await Promise.all([
+                useDramaStore.persist.rehydrate(),
+                useCanvasStore.persist.rehydrate(),
+                useAssetStore.persist.rehydrate(),
+                useDirectorStore.persist.rehydrate(),
+            ]);
+            window.location.reload();
+        });
+        if (window.requestIdleCallback) window.requestIdleCallback(start, { timeout: 1_500 });
+        else window.setTimeout(start, 0);
+    }, []);
 
     useEffect(() => {
         void loadPublicSettings();
@@ -83,15 +109,15 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         searchParams.delete("apikey");
         window.history.replaceState(null, "", `${window.location.pathname}${searchParams.size ? `?${searchParams}` : ""}${window.location.hash}`);
         if (!publicSettings.modelChannel.allowCustomChannel) {
-            openConfigDialog(false);
+            router.push("/settings");
             message.error("后台未允许用户自定义渠道，请联系管理员进行配置");
             return;
         }
         updateConfig("channelMode", "local");
         if (baseUrl) updateConfig("baseUrl", baseUrl);
         if (apiKey) updateConfig("apiKey", apiKey);
-        openConfigDialog(false);
-    }, [message, openConfigDialog, publicSettings, updateConfig]);
+        router.push("/settings");
+    }, [message, publicSettings, router, updateConfig]);
 
     return <>{children}</>;
 }

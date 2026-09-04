@@ -5,6 +5,7 @@ import { AlertCircle, ArrowDown, ArrowUp, Bot, CheckCircle2, Copy, Download, Edi
 import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { saveAs } from "file-saver";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
@@ -217,10 +218,12 @@ export function CreativeWorkflowWorkspace({
     onWorkflowTaskFailure?: (task: WorkflowExternalTaskFailure) => void;
 } = {}) {
     const { message, modal } = App.useApp();
+    const router = useRouter();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    // 旧配置弹窗已废除：缺配置时跳转设置页模型渠道分区
+    const openConfigDialog = (_shouldPromptContinue?: boolean) => router.push("/settings");
     const token = useUserStore((state) => state.token);
     const isUserReady = useUserStore((state) => state.isReady);
     const [workflows, setWorkflows] = useState<CreativeWorkflow[]>([]);

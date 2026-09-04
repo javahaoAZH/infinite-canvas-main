@@ -91,6 +91,18 @@ export type AiConfig = {
     videoChannelId: string;
     textChannelId: string;
     audioChannelId: string;
+    // MCP 总闸：关闭时禁用 Qoder/ChatGPT 双通道开关并立即停用通道
+    mcpMaster: boolean;
+    // 生产审批模式：manual=逐镜确认（默认）/ auto=门禁通过后自动确认代表帧
+    productionApprovalMode: "manual" | "auto";
+    // 渲染速度档：std=标准并发 / fast=加倍并发（影响导演台派发并发上限）
+    renderSpeed: "std" | "fast";
+    // 首页 composer 建议开关（配合建议 chips）
+    showSuggestions: string;
+    // 助手模式：chat=对话确认 / execute=直接执行（附加执行提示词）
+    assistantMode: "chat" | "execute";
+    // 最近一次生成所用渠道描述（右栏「来源」动态化）
+    lastUsedSource: string;
 };
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
@@ -165,20 +177,21 @@ export const defaultConfig: AiConfig = {
     videoChannelId: "",
     textChannelId: "",
     audioChannelId: "",
+    mcpMaster: true,
+    productionApprovalMode: "manual",
+    renderSpeed: "std",
+    showSuggestions: "1",
+    assistantMode: "chat",
+    lastUsedSource: "",
 };
 
 type ConfigStore = {
     config: AiConfig;
     publicSettings: AdminPublicSettings | null;
     isPublicSettingsLoading: boolean;
-    isConfigOpen: boolean;
-    shouldPromptContinue: boolean;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     loadPublicSettings: () => Promise<void>;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
-    openConfigDialog: (shouldPromptContinue?: boolean) => void;
-    setConfigDialogOpen: (isOpen: boolean) => void;
-    clearPromptContinue: () => void;
 };
 
 function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null, canUseRemoteChannel: boolean) {
@@ -362,8 +375,6 @@ export const useConfigStore = create<ConfigStore>()(
             config: defaultConfig,
             publicSettings: null,
             isPublicSettingsLoading: false,
-            isConfigOpen: false,
-            shouldPromptContinue: false,
             updateConfig: (key, value) =>
                 set((state) => ({
                     config: {
@@ -381,9 +392,6 @@ export const useConfigStore = create<ConfigStore>()(
                 }
             },
             isAiConfigReady: (config, model) => isAiConfigReady(config, model),
-            openConfigDialog: (shouldPromptContinue = false) => set({ isConfigOpen: true, shouldPromptContinue }),
-            setConfigDialogOpen: (isConfigOpen) => set({ isConfigOpen }),
-            clearPromptContinue: () => set({ shouldPromptContinue: false }),
         }),
         {
             name: CONFIG_STORE_KEY,

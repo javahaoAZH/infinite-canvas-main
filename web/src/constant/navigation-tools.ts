@@ -1,4 +1,4 @@
-import { Coins, Drama, FileText, ImagePlus, Images, Maximize2, Video } from "lucide-react";
+import { Coins, Drama, FileText, ImagePlus, Images, ListChecks, Maximize2, Sparkles, Video } from "lucide-react";
 
 export const navigationTools = [
     {
@@ -35,6 +35,16 @@ export const navigationTools = [
         slug: "cost",
         label: "成本统计",
         icon: Coins,
+    },
+    {
+        slug: "queue",
+        label: "已安排",
+        icon: ListChecks,
+    },
+    {
+        slug: "skills",
+        label: "技能库",
+        icon: Sparkles,
     },
 ] as const;
 

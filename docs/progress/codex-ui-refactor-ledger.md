@@ -192,6 +192,7 @@
 | [x] | 面部身份控制包与剧情表演硬闸门 | 2026-09-04；改动：`.agents/skills/ai-drama-preproduction/`、`AGENTS.md`、`web/src/app/(user)/drama/prompts.ts`、`services/drama-generation.ts`、`services/drama-review.ts`、`mcp-adapter/drama-mcp.mjs`、`mcpadapter/stdio.go`；验收：Skill `quick_validate.py` 通过；MCP 回读 R003 为 10 项面部控制交付，4 个陆江仙人物镜追加 R003 引用；缺面部控制包时审查和分镜生成均阻断；前端 28 个静态页面、桌面端与独立 MCP 均重新编译成功，桌面进程已重启。 |
 | [x] | 参考职责、提示词资产化与第一章完整缺口清单 | 2026-09-04；改动：`.agents/skills/ai-drama-preproduction/`、`prompts.ts`、`production-plan-step.tsx`、`shots-step.tsx`、`drama-generation.ts`、`drama-review.ts`、`drama-bridge.ts`、`use-drama-store.ts`、两套 MCP schema 与后端清单分类；验收：前端构建和桌面 exe 编译通过，MCP 回读《第一章·初入》资产清单 65 项，其中 33 项待产出/需修改；新增条目均含参考职责、生图提示词、禁止变化、依赖和验收项，原已确认资产未覆盖。 |
 | [x] | R003-01 陆江仙中性正脸身份控制特写入库 | 2026-09-04；通过 MCP 为 R003 绑定并确认 v001，磁盘回读为 1024×1536 PNG、2,224,418 字节；顶层交付件同步为真实当前文件，审核意见明确仅确认首项，其余九项仍逐张生产。 |
+| [x] | 资产当前版本多图可视化与 R003 左右三分之四入库 | 2026-09-04；改动：`web/src/app/(user)/assets/components/project-assets-panel.tsx`；验收：资产行显示当前文件数量并可点击，详情抽屉加载完整图片网格和放大预览；前端 28 页面构建、桌面 exe 重编与启动通过；MCP 确认 R003 v003 累计3张，磁盘逐张回读均为 1024×1536 PNG。 |
 
 ---
 

@@ -15,7 +15,7 @@ import (
 // 项目资产清单（漫剧资产 manifest）：D 盘项目文件夹为唯一事实源（发布区），
 // 浏览器 store 为工作区、条目 history/ 为历史区，三区分离不复制第二份状态。
 // 项目文件夹约定：<根目录>/<项目名>/资产清单.json；资产/<分类>/<名称>/；分集/epNN/；设定/（故事圣经、提示词资产等项目级设定文档）。
-var AssetCategories = []string{"角色", "场景", "道具", "生物", "特效", "图形"}
+var AssetCategories = []string{"角色", "场景", "道具", "生物", "特效", "图形", "声音", "风格"}
 
 var AssetStatuses = []string{"待产出", "制作中", "待审核", "需修改", "已确认", "已归档"}
 
@@ -142,7 +142,7 @@ func findAssetEntry(manifest map[string]any, id string) map[string]any {
 	return nil
 }
 
-// UpsertAssetEntry 登记/更新清单条目（按编号合并），校验分类与状态枚举。
+// UpsertAssetEntry 登记/更新清单条目：优先按编号、其次按稳定键合并；未传字段沿用旧值，避免同步规划时覆盖已确认版本。
 func UpsertAssetEntry(title string, entry map[string]any) (map[string]any, error) {
 	if entry == nil {
 		return nil, errors.New("条目为空")
@@ -163,23 +163,43 @@ func UpsertAssetEntry(title string, entry map[string]any) (map[string]any, error
 	}
 	entries := manifestEntries(manifest)
 	id := entryString(entry, "编号")
-	if id == "" {
-		id = fmt.Sprintf("a%03d", len(entries)+1)
-		entry["编号"] = id
+	key := entryString(entry, "键")
+	if key != "" {
+		for _, old := range entries {
+			if entryString(old, "键") == key && id != "" && entryString(old, "编号") != id {
+				return nil, fmt.Errorf("资产稳定键已被占用：%s", key)
+			}
+		}
 	}
-	if entryString(entry, "状态") == "" {
-		entry["状态"] = "待产出"
-	}
-	entry["更新"] = nowStamp()
-	replaced := false
+	existingIndex := -1
 	for i, old := range entries {
-		if entryString(old, "编号") == id {
-			entries[i] = entry
-			replaced = true
+		if (id != "" && entryString(old, "编号") == id) || (id == "" && key != "" && entryString(old, "键") == key) {
+			existingIndex = i
 			break
 		}
 	}
-	if !replaced {
+	if existingIndex >= 0 {
+		old := entries[existingIndex]
+		merged := map[string]any{}
+		for field, value := range old {
+			merged[field] = value
+		}
+		for field, value := range entry {
+			merged[field] = value
+		}
+		merged["编号"] = entryString(old, "编号")
+		merged["更新"] = nowStamp()
+		entry = merged
+		entries[existingIndex] = merged
+	} else {
+		if id == "" {
+			id = fmt.Sprintf("a%03d", len(entries)+1)
+			entry["编号"] = id
+		}
+		if entryString(entry, "状态") == "" {
+			entry["状态"] = "待产出"
+		}
+		entry["更新"] = nowStamp()
 		entries = append(entries, entry)
 	}
 	writeBackEntries(manifest, entries)
@@ -369,7 +389,50 @@ func WriteAssetProjectFile(title, rel string, data []byte) error {
 	return os.WriteFile(target, data, 0o644)
 }
 
-// CheckEpisodeAssets 开工前检查：该集引用资产的缺产/未确认/依赖阻塞清单。
+func anyStrings(value any) []string {
+	raw, _ := value.([]any)
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+			result = append(result, strings.TrimSpace(text))
+		}
+	}
+	return result
+}
+
+func currentAssetFiles(entry map[string]any) []string {
+	current := entryString(entry, "当前版本")
+	for _, version := range entryVersions(entry) {
+		if entryString(version, "版本") == current {
+			return anyStrings(version["文件"])
+		}
+	}
+	return nil
+}
+
+func episodeBoard(manifest map[string]any, episode string) map[string]any {
+	for _, item := range entryList(manifest, "分集") {
+		if board, ok := item.(map[string]any); ok && entryString(board, "集") == episode {
+			return board
+		}
+	}
+	return nil
+}
+
+func anyInt(value any) int {
+	switch number := value.(type) {
+	case float64:
+		return int(number)
+	case int:
+		return number
+	case json.Number:
+		result, _ := number.Int64()
+		return int(result)
+	}
+	return 0
+}
+
+// CheckEpisodeAssets 开工前逐镜检查：原文证据、连续性字段、资产引用、版本文件与依赖必须全部可解析。
 func CheckEpisodeAssets(title, episode string) (map[string]any, error) {
 	manifest, err := LoadAssetManifest(title)
 	if err != nil {
@@ -377,37 +440,142 @@ func CheckEpisodeAssets(title, episode string) (map[string]any, error) {
 	}
 	entries := manifestEntries(manifest)
 	statusByID := map[string]string{}
+	entryByID := map[string]map[string]any{}
 	for _, entry := range entries {
-		statusByID[entryString(entry, "编号")] = entryString(entry, "状态")
+		id := entryString(entry, "编号")
+		statusByID[id] = entryString(entry, "状态")
+		entryByID[id] = entry
+	}
+	board := episodeBoard(manifest, episode)
+	if board == nil {
+		return nil, errors.New("分集不存在：" + episode)
 	}
 	missing, unconfirmed, blocked := []any{}, []any{}, []any{}
-	for _, entry := range entries {
-		used := false
-		for _, item := range entryList(entry, "用于") {
-			if s, ok := item.(string); ok && strings.HasPrefix(s, episode) {
-				used = true
-				break
+	undefinedRefs, missingFiles, emptyShots, incompleteShots := []any{}, []any{}, []any{}, []any{}
+	coverageIssues := []any{}
+	coverage := entryList(board, "原文覆盖")
+	validShotNumbers := map[int]bool{}
+	for _, item := range entryList(board, "镜头") {
+		if shot, ok := item.(map[string]any); ok {
+			validShotNumbers[anyInt(shot["镜号"])] = true
+		}
+	}
+	if len(coverage) == 0 {
+		coverageIssues = append(coverageIssues, map[string]any{"序号": 0, "原因": "原文覆盖台账为空"})
+	}
+	for index, item := range coverage {
+		record, ok := item.(map[string]any)
+		if !ok || entryString(record, "原文") == "" || entryString(record, "去向") == "" {
+			coverageIssues = append(coverageIssues, map[string]any{"序号": index + 1, "原因": "缺少原文或去向"})
+			continue
+		}
+		if entryString(record, "去向") == "暂不采用" && entryString(record, "说明") == "" {
+			coverageIssues = append(coverageIssues, map[string]any{"序号": index + 1, "原因": "暂不采用但未说明原因"})
+		} else if entryString(record, "去向") != "暂不采用" {
+			raw, ok := record["镜号"].([]any)
+			if !ok || len(raw) == 0 {
+				coverageIssues = append(coverageIssues, map[string]any{"序号": index + 1, "原因": "没有对应镜号"})
+				continue
 			}
-		}
-		if !used {
-			continue
-		}
-		status := entryString(entry, "状态")
-		if status == "已确认" {
-			continue
-		}
-		if status == "待产出" {
-			missing = append(missing, entry)
-		} else {
-			unconfirmed = append(unconfirmed, entry)
-		}
-		for _, dep := range entryList(entry, "依赖") {
-			if depID, ok := dep.(string); ok && statusByID[depID] != "已确认" {
-				blocked = append(blocked, map[string]any{"条目": entryString(entry, "名称"), "依赖": depID, "依赖状态": statusByID[depID]})
+			for _, number := range raw {
+				if !validShotNumbers[anyInt(number)] {
+					coverageIssues = append(coverageIssues, map[string]any{"序号": index + 1, "原因": "引用了不存在的镜号"})
+					break
+				}
 			}
 		}
 	}
-	return map[string]any{"集": episode, "缺产出": missing, "未确认": unconfirmed, "依赖阻塞": blocked, "可开工": len(missing) == 0 && len(blocked) == 0}, nil
+	seenMissing, seenUnconfirmed, seenBlocked := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, item := range entryList(board, "镜头") {
+		shot, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		shotNumber := anyInt(shot["镜号"])
+		missingFields := []string{}
+		for _, field := range []string{"原文证据", "场景", "叙事时点", "镜头职责", "起始状态", "结束状态", "连续性", "出图提示词", "图生视频提示词", "质检标准"} {
+			if entryString(shot, field) == "" {
+				missingFields = append(missingFields, field)
+			}
+		}
+		if _, exists := shot["出场角色"]; !exists {
+			missingFields = append(missingFields, "出场角色（空镜也需显式为空数组）")
+		}
+		if len(missingFields) > 0 {
+			incompleteShots = append(incompleteShots, map[string]any{"镜号": shotNumber, "缺少": missingFields})
+		}
+		refs := entryList(shot, "资产引用")
+		if len(refs) == 0 {
+			for _, id := range anyStrings(shot["所需资产"]) {
+				refs = append(refs, map[string]any{"编号": id})
+			}
+		}
+		if len(refs) == 0 {
+			emptyShots = append(emptyShots, shotNumber)
+			continue
+		}
+		for _, rawRef := range refs {
+			ref, ok := rawRef.(map[string]any)
+			if !ok {
+				continue
+			}
+			id := entryString(ref, "编号")
+			entry := entryByID[id]
+			if entry == nil {
+				undefinedRefs = append(undefinedRefs, map[string]any{"镜号": shotNumber, "编号": id})
+				continue
+			}
+			status := entryString(entry, "状态")
+			if status == "待产出" && !seenMissing[id] {
+				missing = append(missing, entry)
+				seenMissing[id] = true
+			} else if status != "已确认" && !seenUnconfirmed[id] {
+				unconfirmed = append(unconfirmed, entry)
+				seenUnconfirmed[id] = true
+			}
+			files := currentAssetFiles(entry)
+			selectors := anyStrings(ref["文件"])
+			if len(files) == 0 {
+				missingFiles = append(missingFiles, map[string]any{"镜号": shotNumber, "编号": id, "原因": "当前版本没有文件"})
+			} else if len(files) > 1 && len(selectors) == 0 {
+				missingFiles = append(missingFiles, map[string]any{"镜号": shotNumber, "编号": id, "原因": "多文件资产未选择本镜文件"})
+			} else {
+				filesToCheck := files
+				if len(selectors) > 0 {
+					filesToCheck = nil
+				}
+				for _, selector := range selectors {
+					matched := false
+					for _, file := range files {
+						if strings.Contains(strings.ToLower(file), strings.ToLower(selector)) {
+							matched = true
+							filesToCheck = append(filesToCheck, file)
+							break
+						}
+					}
+					if !matched {
+						missingFiles = append(missingFiles, map[string]any{"镜号": shotNumber, "编号": id, "原因": "未找到指定文件：" + selector})
+					}
+				}
+				for _, file := range filesToCheck {
+					if _, err := AssetFileAbs(title, file); err != nil {
+						missingFiles = append(missingFiles, map[string]any{"镜号": shotNumber, "编号": id, "原因": err.Error()})
+					}
+				}
+			}
+			for _, depID := range anyStrings(entry["依赖"]) {
+				if statusByID[depID] != "已确认" {
+					key := id + "\x00" + depID
+					if !seenBlocked[key] {
+						blocked = append(blocked, map[string]any{"条目": entryString(entry, "名称"), "依赖": depID, "依赖状态": statusByID[depID]})
+						seenBlocked[key] = true
+					}
+				}
+			}
+		}
+	}
+	ready := len(missing) == 0 && len(unconfirmed) == 0 && len(blocked) == 0 && len(undefinedRefs) == 0 && len(missingFiles) == 0 && len(emptyShots) == 0 && len(incompleteShots) == 0 && len(coverageIssues) == 0
+	return map[string]any{"集": episode, "缺产出": missing, "未确认": unconfirmed, "依赖阻塞": blocked, "未定义引用": undefinedRefs, "缺少文件": missingFiles, "空资产镜头": emptyShots, "字段不完整镜头": incompleteShots, "覆盖台账问题": coverageIssues, "可开工": ready}, nil
 }
 
 // AssetFileAbs 返回项目文件夹受控路径的绝对路径（供流式下发缩略图/文件）。

@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, Suspense, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
-import { AppTopNav } from "@/components/layout/app-top-nav";
+import { AppRightRail } from "@/components/layout/app-right-rail";
+import { AppSidebar } from "@/components/layout/app-sidebar";
+import { AppTitleBar } from "@/components/layout/app-titlebar";
 import { fetchUserConfig } from "@/services/api/user-config";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -16,6 +18,8 @@ export default function UserLayout({ children }: { children: ReactNode }) {
     const isReady = useUserStore((state) => state.isReady);
     const wasLoggedOutRef = useRef(false);
     const isProtectedPage = protectedPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+    const isBarePage = pathname === "/login";
+    const [railOpen, setRailOpen] = useState(false);
 
     useEffect(() => {
         if (!isReady || !isProtectedPage || user) return;
@@ -51,8 +55,16 @@ export default function UserLayout({ children }: { children: ReactNode }) {
 
     return (
         <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-            <AppTopNav />
-            <div className="min-h-0 flex-1 overflow-hidden">{isProtectedPage && (!isReady || !user) ? null : children}</div>
+            {isBarePage ? null : <AppTitleBar railOpen={railOpen} onRailToggle={() => setRailOpen((value) => !value)} />}
+            <div className="flex min-h-0 flex-1">
+                {isBarePage ? null : (
+                    <Suspense fallback={null}>
+                        <AppSidebar />
+                    </Suspense>
+                )}
+                <div className="min-w-0 flex-1 overflow-hidden">{isProtectedPage && (!isReady || !user) ? null : children}</div>
+                {!isBarePage && railOpen ? <AppRightRail /> : null}
+            </div>
         </div>
     );
 }

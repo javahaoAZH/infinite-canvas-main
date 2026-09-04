@@ -1,4 +1,5 @@
 import { apiGet, apiPost } from "./request";
+import { detectImageFileType } from "@/lib/image-utils";
 
 // 项目资产清单（D 盘项目文件夹为唯一事实源）：三区分离＝浏览器 store 工作区 / 清单+文件夹发布区 / history 历史区
 export type AssetVersion = { 版本: string; 状态?: string; 文件?: string[]; 预览?: string; 源?: string; 时间?: string; 备注?: string };
@@ -19,6 +20,14 @@ export type AssetEntry = {
     用于?: string[];
     模型?: string;
     更新?: string;
+    键?: string;
+    层级?: string;
+    事实等级?: string;
+    交付件?: string[];
+    参考职责?: string;
+    生图提示词?: string;
+    禁止变化?: string;
+    验收项?: string[];
 };
 // 季集规划表：键名与清单 JSON 一致（中文），旧英文键名从未落盘，界面读不到值
 export type SeasonAct = { 幕: string; 章节?: string; 集数?: number };
@@ -52,18 +61,31 @@ export type ShotRecord = {
     推荐模型?: string;
     状态?: string;
     产物?: { 分镜图?: string; 视频?: string; 对白?: string; 旁白?: string };
+    原文证据?: string;
+    叙事时点?: string;
+    镜头职责?: string;
+    起始状态?: string;
+    结束状态?: string;
+    连续性?: string;
+    资产引用?: Array<{ 编号: string; 用途?: string; 变体?: string; 文件?: string[]; 参考职责?: string; 参考优先级?: string }>;
 };
-export type EpisodeBoard = { 集: string; 季?: string; 幕?: string; 标题?: string; 镜头?: ShotRecord[] };
+export type SourceCoverageRecord = { 原文: string; 去向: string; 镜号?: number[]; 说明?: string };
+export type EpisodeBoard = { 集: string; 季?: string; 幕?: string; 标题?: string; 原文覆盖?: SourceCoverageRecord[]; 镜头?: ShotRecord[] };
 export type AssetManifest = { schema?: number; 项目?: string; 更新?: string; 条目?: AssetEntry[]; 模型策略?: Record<string, string>; 季集?: SeasonInfo[]; 分集?: EpisodeBoard[] };
 export type EpisodeAssetCheck = {
     集: string;
     缺产出: AssetEntry[];
     未确认: AssetEntry[];
     依赖阻塞: Array<{ 条目: string; 依赖: string; 依赖状态: string }>;
+    未定义引用?: Array<{ 镜号: number; 编号: string }>;
+    缺少文件?: Array<{ 镜号: number; 编号: string; 原因: string }>;
+    空资产镜头?: number[];
+    字段不完整镜头?: Array<{ 镜号: number; 缺少: string[] }>;
+    覆盖台账问题?: Array<{ 序号: number; 原因: string }>;
     可开工: boolean;
 };
 
-export const ASSET_CATEGORIES = ["角色", "场景", "道具", "生物", "特效", "图形"];
+export const ASSET_CATEGORIES = ["角色", "场景", "道具", "生物", "特效", "图形", "声音", "风格"];
 export const ASSET_STATUSES = ["待产出", "制作中", "待审核", "需修改", "已确认", "已归档"];
 export const ASSET_PRIORITIES = ["P0", "P1", "P2", "P3"];
 
@@ -86,6 +108,10 @@ export function reviewAssetEntry(token: string, project: string, id: string, rev
 
 export function writeAssetProjectFile(token: string, project: string, path: string, text: string) {
     return apiPost<{ written: boolean; path: string }>("/api/v1/drama-assets/file", { project, path, text }, token);
+}
+
+export function writeAssetProjectBinaryFile(token: string, project: string, path: string, base64: string) {
+    return apiPost<{ written: boolean; path: string }>("/api/v1/drama-assets/file", { project, path, base64 }, token);
 }
 
 export function checkEpisodeAssets(token: string, project: string, episode: string) {
@@ -118,6 +144,32 @@ export async function loadAssetFileObjectUrl(token: string, project: string, pat
     });
     if (!response.ok) throw new Error("资产文件读取失败");
     return URL.createObjectURL(await response.blob());
+}
+
+export async function loadAssetFileBlob(token: string, project: string, path: string): Promise<Blob> {
+    const response = await fetch(`/api/v1/drama-assets/file?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error("资产文件读取失败");
+    const blob = await response.blob();
+    const detected = detectImageFileType(new Uint8Array(await blob.slice(0, 12).arrayBuffer()));
+    if (!blob.size || !detected) throw new Error("归档文件不是有效的 PNG/JPEG/WebP 图片");
+    return blob;
+}
+
+// 分镜图生成需把鉴权资产直接交给图片接口；blob URL 无法跨请求读取，统一转成 data URL
+export async function loadAssetFileDataUrl(token: string, project: string, path: string): Promise<string> {
+    const response = await fetch(`/api/v1/drama-assets/file?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error("资产文件读取失败");
+    const blob = await response.blob();
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("资产文件读取失败"));
+        reader.readAsDataURL(blob);
+    });
 }
 
 export function entryCurrentFiles(entry: AssetEntry): string[] {

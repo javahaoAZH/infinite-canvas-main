@@ -3,7 +3,7 @@ $found = $false
 while ((Get-Date) -lt $deadline) {
     foreach ($f in "d:\infinite-canvas-main\dev-e2e-backend.log", "d:\infinite-canvas-main\dev-e2e-backend.err.log") {
         if (Test-Path $f) {
-            $m = Select-String -Path $f -Pattern "Listening and serving HTTP on :8080" -SimpleMatch -ErrorAction SilentlyContinue
+            $m = Select-String -Path $f -Pattern "Listening and serving HTTP on :18080" -SimpleMatch -ErrorAction SilentlyContinue
             if ($m) { $found = $true; break }
         }
     }

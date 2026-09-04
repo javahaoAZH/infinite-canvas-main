@@ -13,13 +13,24 @@ import (
 	"github.com/tigerowo/infinite-canvas/webui"
 )
 
+// ShowWindowHook 由桌面形态注入：/__show-window 路由调用它唤醒已运行实例被隐藏的桌面窗口。
+var ShowWindowHook func()
+
 func New() *gin.Engine {
 	router := gin.Default()
+
 	router.RedirectTrailingSlash = false
 	_ = router.SetTrustedProxies(nil)
 	api := router.Group("/api")
 	api.GET("/health", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
+	})
+	// 单实例协调：新实例探测到已在运行的实例后调用此接口唤醒其隐藏的桌面窗口
+	api.GET("/__show-window", func(c *gin.Context) {
+		if ShowWindowHook != nil {
+			ShowWindowHook()
+		}
+		c.JSON(http.StatusOK, gin.H{"shown": ShowWindowHook != nil})
 	})
 	api.POST("/auth/register", gin.WrapF(handler.Register))
 	api.POST("/auth/login", gin.WrapF(handler.Login))
@@ -222,6 +233,9 @@ func spaHandler(uiFS fs.FS) gin.HandlerFunc {
 			return
 		}
 		name := strings.TrimPrefix(requestPath, "/")
+		// HTML 文档强制重新验证：避免 WebView2 磁盘缓存 heuristic 新鲜度把旧构建页面当新鲜响应直接渲染，
+		// 造成重建后界面不更新、未缓存路由导航失败这类僵尸状态
+		c.Header("Cache-Control", "no-cache")
 		if name != "" && !strings.Contains(name, ".") {
 			if page, err := fs.ReadFile(uiFS, name+".html"); err == nil {
 				c.Data(http.StatusOK, "text/html; charset=utf-8", page)

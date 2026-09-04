@@ -50,6 +50,10 @@ export function getAntThemeConfig(dark: boolean): ThemeConfig {
             colorLinkHover: color.primaryHover,
             colorLinkActive: color.primary,
             colorTextLightSolid: color.primaryText,
+            // B#1 12px 字号常态 + B#2 h-8/gap-2 控件尺度：antd 全局 12px 字号、32px 控件高、8px 圆角
+            fontSize: 12,
+            controlHeight: 32,
+            borderRadius: 8,
         },
         components: {
             Button: {

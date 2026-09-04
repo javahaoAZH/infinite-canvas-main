@@ -1,11 +1,12 @@
 "use client";
 
-import { Clapperboard, LoaderCircle, RotateCcw } from "lucide-react";
-import { useState } from "react";
-import { App, Button, Empty, Progress, Tag } from "antd";
+import { Clapperboard, LoaderCircle, RotateCcw, Square } from "lucide-react";
+import { useRef, useState } from "react";
+import { Alert, App, Button, Empty, Progress, Tag } from "antd";
 
 import { resolveArtStyleLabel } from "@/app/(user)/drama/prompts";
 import { generateShotVideo } from "@/app/(user)/drama/services/drama-generation";
+import { approvedRepresentativeIds, representativeShotIds } from "@/app/(user)/drama/services/production-readiness";
 import { useDramaStore, type DramaProject } from "@/stores/use-drama-store";
 import { useEffectiveConfig } from "@/stores/use-config-store";
 
@@ -17,6 +18,13 @@ export function ShotVideosStep({ project }: { project: DramaProject }) {
     const [progressMap, setProgressMap] = useState<Record<string, number>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [batchRunning, setBatchRunning] = useState(false);
+    // 批量停止开关：置 true 后不再派发新任务，在途请求自然结束（与导演台「终止」同语义）
+    const batchCancelRef = useRef(false);
+    const representativeIds = representativeShotIds(project);
+    const approvedIds = approvedRepresentativeIds(project);
+    const keyframeGateReady = representativeIds.length > 0 && approvedIds.length === representativeIds.length;
+    const imageCount = project.shots.filter((shot) => project.shotImages[shot.id]).length;
+    const allImagesReady = Boolean(project.shots.length) && imageCount === project.shots.length;
 
     const runSingle = async (shotId: string) => {
         setBusyIds((current) => ({ ...current, [shotId]: true }));
@@ -36,9 +44,11 @@ export function ShotVideosStep({ project }: { project: DramaProject }) {
     const runBatch = async () => {
         const pending = project.shots.filter((shot) => project.shotImages[shot.id] && !project.shotVideos[shot.id]);
         if (!pending.length) return message.info("没有待生成的分镜视频（需要先有分镜图）");
+        batchCancelRef.current = false;
         setBatchRunning(true);
         let failed = 0;
         for (const shot of pending) {
+            if (batchCancelRef.current) break;
             setBusyIds((current) => ({ ...current, [shot.id]: true }));
             setErrors((current) => ({ ...current, [shot.id]: "" }));
             try {
@@ -53,22 +63,30 @@ export function ShotVideosStep({ project }: { project: DramaProject }) {
             }
         }
         setBatchRunning(false);
-        message[failed ? "warning" : "success"](failed ? `批量生成完成，${failed} 个分镜失败，可单独重试` : "全部分镜视频生成完成");
+        if (batchCancelRef.current) message.info("已停止批量生成：在途请求自然结束，剩余视频可随时重新发起");
+        else message[failed ? "warning" : "success"](failed ? `批量生成完成，${failed} 个分镜失败，可单独重试` : "全部分镜视频生成完成");
     };
 
     return (
         <div className="mx-auto w-full max-w-5xl space-y-4">
+            <Alert
+                type={keyframeGateReady && allImagesReady ? "success" : "warning"}
+                showIcon
+                message={keyframeGateReady ? `代表关键帧已确认 ${approvedIds.length}/${representativeIds.length}` : `代表关键帧待确认 ${approvedIds.length}/${representativeIds.length}`}
+                description={allImagesReady ? "全镜首帧已齐，可按镜头逐条生成动态镜头。" : `全镜首帧 ${imageCount}/${project.shots.length}，请先回到“关键帧 / 分镜”补齐；视频生成不会使用缺失首帧的镜头。`}
+            />
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-1.5 text-sm text-stone-500 dark:text-stone-400">
-                    <span>逐分镜用分镜图生成视频，生成时间较长，请耐心等待；失败的分镜可单独重试。</span>
+                    <span>逐镜使用已确认首帧和动态提示词生成视频；先抽检动作、运镜和人物一致性，再批量补齐。</span>
                     <span className="flex items-center gap-1">
                         画面风格
                         <Tag className="m-0">{resolveArtStyleLabel(artStyle)}</Tag>
                     </span>
                 </div>
-                <Button type="primary" icon={<Clapperboard className="size-4" />} loading={batchRunning} onClick={() => void runBatch()}>
-                    生成全部
+                <Button type="primary" icon={<Clapperboard className="size-4" />} loading={batchRunning} disabled={!keyframeGateReady || !allImagesReady} onClick={() => void runBatch()}>
+                    批量生成动态镜头
                 </Button>
+                {batchRunning ? <Button danger icon={<Square className="size-4 fill-current" />} onClick={() => { batchCancelRef.current = true; }}>停止</Button> : null}
             </div>
 
             {project.shots.length === 0 ? (
@@ -103,7 +121,7 @@ export function ShotVideosStep({ project }: { project: DramaProject }) {
                                         block
                                         icon={<RotateCcw className="size-4" />}
                                         loading={busy}
-                                        disabled={!shotImage}
+                                        disabled={!shotImage || !keyframeGateReady}
                                         onClick={() => void runSingle(shot.id)}
                                     >
                                         {media ? "重新生成视频" : "生成视频"}

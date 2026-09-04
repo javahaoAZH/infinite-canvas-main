@@ -29,8 +29,8 @@ export function ScriptStep({ project }: { project: DramaProject }) {
         setStructuring(true);
         setError("");
         try {
-            const { shotsCount, charactersCount } = await structureScript(project.id, effectiveConfig);
-            message.success(`已结构化出 ${shotsCount} 个分镜、${charactersCount} 个角色`);
+            const { shotsCount, charactersCount, assetsCount, coverageCount } = await structureScript(project.id, effectiveConfig);
+            message.success(`生产规划已建立：${coverageCount} 条原文覆盖、${assetsCount} 项资产、${shotsCount} 个分镜、${charactersCount} 个角色`);
         } catch (err) {
             setError(err instanceof Error ? err.message : "结构化剧本失败，可重试");
         } finally {
@@ -41,7 +41,7 @@ export function ScriptStep({ project }: { project: DramaProject }) {
     return (
         <div className="mx-auto w-full max-w-4xl space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-sm text-stone-500 dark:text-stone-400">输入或粘贴完整剧本，可调用文本模型结构化为分镜；也可以跳过 AI，在下一步手动填写分镜。</div>
+                <div className="text-sm text-muted-foreground">粘贴完整章节后，一次建立原文覆盖、资产圣经和连续性分镜。未通过生产规划前不会进入生图。</div>
                 <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm text-stone-500 dark:text-stone-400">题材</span>
                     <Select
@@ -56,11 +56,11 @@ export function ScriptStep({ project }: { project: DramaProject }) {
                         }}
                     />
                     <Button type="primary" icon={<WandSparkles className="size-4" />} loading={structuring} onClick={() => void runStructure()}>
-                        AI 结构化剧本
+                        拆解原文并建立生产包
                     </Button>
                 </div>
             </div>
-            {error ? <Alert type="error" showIcon message={error} description="文本模型返回内容无法解析或请求失败，可重试，或直接在下一步手动填写分镜。" /> : null}
+            {error ? <Alert type="error" showIcon message={error} description="文本模型返回内容无法解析或生产规划校验未通过，请修正后重试。" /> : null}
             <Input.TextArea
                 rows={16}
                 value={project.script}

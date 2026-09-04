@@ -13,6 +13,7 @@ import {
     FolderPlus,
     History,
     ImagePlus,
+    Image as ImageIcon,
     LoaderCircle,
     PanelBottom,
     PanelLeft,
@@ -27,10 +28,12 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Segmented, Tag, Typography } from "antd";
+import { useRouter } from "next/navigation";
 import localforage from "localforage";
 import { saveAs } from "file-saver";
 
 import { ImageSettingsPanel, imageFormatLabel, imageQualityLabel, imageSizeLabel, imageSizeOptions } from "@/components/image-settings-panel";
+import { ThreadHeader } from "@/components/layout/thread-header";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/app/(user)/canvas/components/asset-picker-modal";
@@ -131,12 +134,14 @@ const logStore = localforage.createInstance({ name: "infinite-canvas", storeName
 const categoryStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_categories" });
 export default function ImagePage() {
     const { message, modal } = App.useApp();
+    const router = useRouter();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    // 旧配置弹窗已废除：缺配置时跳转设置页模型渠道分区
+    const openConfigDialog = (_shouldPromptContinue?: boolean) => router.push("/settings");
     const addAsset = useAssetStore((state) => state.addAsset);
     const token = useUserStore((state) => state.token);
     const isUserReady = useUserStore((state) => state.isReady);
@@ -963,6 +968,7 @@ export default function ImagePage() {
         }
         const baseConfig = { ...effectiveConfig, ...configOverride };
         const requestModel = configOverride?.imageModel || configOverride?.model || model;
+        updateConfig("lastUsedSource", requestModel);
         const requestChannelId = resolveImageChannelId(baseConfig, requestModel, configOverride?.imageChannelId, configOverride?.activeChannelId, baseConfig.imageChannelId, baseConfig.activeChannelId);
         if (!isAiConfigReady(baseConfig, requestModel)) {
             message.warning("请先完成配置");
@@ -1463,19 +1469,21 @@ function WorkbenchPanel({
 
 function WorkbenchHeader({ currentLayout, onLayoutChange, compact = false }: { currentLayout: WorkbenchLayout; onLayoutChange: (layout: WorkbenchLayout) => void; compact?: boolean }) {
     return (
-        <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-                <h1 className={`${compact ? "text-base" : "text-2xl"} font-semibold text-stone-950 dark:text-stone-100`}>生图工作台</h1>
-            </div>
-            <div className="flex shrink-0 rounded-lg border border-stone-200 bg-stone-50 p-1 dark:border-stone-800 dark:bg-stone-900">
-                <Button size="small" type={currentLayout === "side" ? "primary" : "text"} icon={<PanelLeft className="size-3.5" />} onClick={() => onLayoutChange("side")}>
-                    侧边
-                </Button>
-                <Button size="small" type={currentLayout === "bottom" ? "primary" : "text"} icon={<PanelBottom className="size-3.5" />} onClick={() => onLayoutChange("bottom")}>
-                    底部
-                </Button>
-            </div>
-        </div>
+        <ThreadHeader
+            icon={<ImageIcon className="size-4" />}
+            title="生图工作台"
+            desc={compact ? undefined : "文生图与参考图编辑"}
+            actions={
+                <div className="flex shrink-0 rounded-lg border border-stone-200 bg-stone-50 p-1 dark:border-stone-800 dark:bg-stone-900">
+                    <Button size="small" type={currentLayout === "side" ? "primary" : "text"} icon={<PanelLeft className="size-3.5" />} onClick={() => onLayoutChange("side")}>
+                        侧边
+                    </Button>
+                    <Button size="small" type={currentLayout === "bottom" ? "primary" : "text"} icon={<PanelBottom className="size-3.5" />} onClick={() => onLayoutChange("bottom")}>
+                        底部
+                    </Button>
+                </div>
+            }
+        />
     );
 }
 
