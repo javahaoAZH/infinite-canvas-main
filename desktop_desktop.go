@@ -82,6 +82,11 @@ func makeFrameless(hwnd uintptr) {
 	// 否则边框未绘制呈透空带（窗口四周露出背后内容）
 	dark := int32(1)
 	procDwmSetAttribute.Call(hwnd, uintptr(20), uintptr(unsafe.Pointer(&dark)), 4)
+	// Win11：直接钉死标题/边框颜色为深色——浅色系统主题下 DWM 会把顶边框绘制成白色色带
+	captionColor := int32(0x00202020) // COLORREF 0x00BBGGRR
+	borderColor := int32(0x00202020)
+	procDwmSetAttribute.Call(hwnd, uintptr(35), uintptr(unsafe.Pointer(&captionColor)), 4)
+	procDwmSetAttribute.Call(hwnd, uintptr(34), uintptr(unsafe.Pointer(&borderColor)), 4)
 }
 
 // compatPort 旧默认端口：保留兼容监听，避免历史书签/IDE 内置浏览器/第三方内嵌 WebView 指向空端口报连接拒绝。

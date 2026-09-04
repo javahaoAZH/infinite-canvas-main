@@ -523,6 +523,32 @@
         color: rgba(255, 255, 255, 0.92) !important;
     }
 
+    /* 关闭/上一张/下一张：同样压暗底色并反白，避免暗色下不可见 */
+    .ant-image-preview-close,
+    .ant-image-preview-switch-prev,
+    .ant-image-preview-switch-next {
+        color: rgba(255, 255, 255, 0.9) !important;
+        background: rgba(23, 23, 23, 0.7) !important;
+        backdrop-filter: blur(8px);
+        border-radius: 999px;
+    }
+
+    .ant-image-preview-close .anticon,
+    .ant-image-preview-switch-prev .anticon,
+    .ant-image-preview-switch-next .anticon {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+
+    .ant-image-preview-switch-disabled {
+        opacity: 0.35;
+    }
+
+    .ant-image-preview-close:hover,
+    .ant-image-preview-switch-prev:not(.ant-image-preview-switch-disabled):hover,
+    .ant-image-preview-switch-next:hover {
+        background: rgba(70, 70, 70, 0.9) !important;
+    }
+
     .canvas-image-settings-popover .ant-popover-inner-content {
         max-height: calc(100vh - 96px);
         overflow-y: auto;
