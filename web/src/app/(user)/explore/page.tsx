@@ -30,7 +30,7 @@ export default function ExplorePage() {
     }, [message]);
 
     return (
-        <main className="h-full overflow-y-auto bg-background">
+        <main className="h-full overflow-y-auto overflow-x-hidden bg-background">
             <section className="mx-auto max-w-7xl px-6 py-8">
                 <HomeBannerCarousel banners={HOME_BANNERS} />
 

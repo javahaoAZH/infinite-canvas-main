@@ -1,10 +1,10 @@
 "use client";
 
 // Codex 桌面版同构左侧栏：品牌行 + 导航行 + 项目区（固定/搜索/归档/行菜单）+ 最近生成 + 底部用户行；发丝分隔、alpha hover、圆角行
-import { Archive, ArchiveRestore, CircleHelp, Compass, Drama, Folder, MoreHorizontal, Pencil, Pin, PinOff, Plug, SquarePen, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, CircleHelp, Compass, Drama, Folder, MoreHorizontal, Pencil, Pin, PinOff, Plug, Search, SquarePen, Trash2 } from "lucide-react";
 import { Dropdown, Input, Modal, type MenuProps } from "antd";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { useCanvasStore } from "@/app/(user)/canvas/stores/use-canvas-store";
@@ -12,7 +12,7 @@ import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { navigationTools } from "@/constant/navigation-tools";
 import { cn } from "@/lib/utils";
 import { useDramaStore } from "@/stores/use-drama-store";
-import { SidebarRecentGenerations, SidebarSearchOverlay } from "./sidebar-overlays";
+import { SidebarNotifications, SidebarRecentGenerations, SidebarSearchOverlay } from "./sidebar-overlays";
 
 function NavRow({ href, active, icon, label, menu }: { href: string; active: boolean; icon: React.ReactNode; label: string; menu?: React.ReactNode }) {
     return (
@@ -33,6 +33,7 @@ function NavRow({ href, active, icon, label, menu }: { href: string; active: boo
 }
 
 export function AppSidebar() {
+    const router = useRouter();
     const pathname = usePathname();
     const searchParams = useSearchParams();
     const canvasProjects = useCanvasStore((state) => state.projects);
@@ -136,10 +137,43 @@ export function AppSidebar() {
 
     return (
         <aside className="flex h-full w-60 shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground">
-            {/* 品牌/搜索/铃铛已上移至标题栏（对标 ChatGPT 桌面版）；搜索 overlay 仍挂在侧栏，由标题栏派发事件打开 */}
+            {/* 品牌下拉行（对标 ChatGPT 桌面版侧栏顶部：品牌∨ + 搜索 + 铃铛） */}
+            <div className="flex h-12 shrink-0 items-center gap-0.5 px-2.5">
+                <Dropdown
+                    trigger={["click"]}
+                    menu={{
+                        items: [
+                            { key: "version", label: "版本 v0.5.8", disabled: true },
+                            { type: "divider" },
+                            { key: "explore", label: "探索", onClick: () => router.push("/explore") },
+                            { key: "settings", label: "设置", onClick: () => router.push("/settings") },
+                            { key: "github", label: "GitHub 仓库", onClick: () => window.open("https://github.com/javahaoAZH/infinite-canvas-main", "_blank") },
+                        ],
+                    }}
+                >
+                    <button type="button" className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-[15px] font-semibold tracking-tight text-foreground transition-colors hover:bg-foreground/8" title="无限画布菜单">
+                        <span className="truncate">无限画布</span>
+                        <ChevronDown className="size-3.5 shrink-0 opacity-60" />
+                    </button>
+                </Dropdown>
+                <div className="ml-auto flex items-center gap-0.5">
+                    <button
+                        type="button"
+                        className={cn(ghostIcon, searchOpen && "bg-foreground/10 text-foreground")}
+                        title="统一搜索（画布、漫剧、分镜、素材、提示词）"
+                        aria-label="搜索"
+                        onClick={() => setSearchOpen(true)}
+                    >
+                        <Search />
+                    </button>
+                    <SidebarNotifications />
+                </div>
+            </div>
+
+            {/* 搜索 overlay 由本组件挂载；标题栏搜索按钮亦通过事件打开 */}
             <SidebarSearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
 
-            <nav className="flex shrink-0 flex-col gap-0.5 px-2 pt-2">
+            <nav className="flex shrink-0 flex-col gap-0.5 px-2 pt-1">
                 <NavRow href="/" active={pathname === "/"} icon={<SquarePen />} label="新对话" />
                 {navigationTools.map((tool) => (
                     <NavRow key={tool.slug} href={`/${tool.slug}`} active={pathname === `/${tool.slug}` || pathname.startsWith(`/${tool.slug}/`)} icon={<tool.icon />} label={tool.label} />

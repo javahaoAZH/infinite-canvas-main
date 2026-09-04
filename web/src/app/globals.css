@@ -494,6 +494,21 @@
         -webkit-backdrop-filter: blur(16px);
     }
 
+    /* 图片预览工具栏深色主题适配：浅色半透明底 + 深色图标在暗色下完全不可见 */
+    .dark .ant-image-preview-operations {
+        background: rgba(23, 23, 23, 0.92) !important;
+        backdrop-filter: blur(8px);
+    }
+
+    .dark .ant-image-preview-operations .ant-image-preview-operations-operation,
+    .dark .ant-image-preview-operations .ant-image-preview-operations-operation .anticon {
+        color: rgba(255, 255, 255, 0.88) !important;
+    }
+
+    .dark .ant-image-preview-operations .ant-image-preview-operations-operation:disabled {
+        color: rgba(255, 255, 255, 0.25) !important;
+    }
+
     .canvas-image-settings-popover .ant-popover-inner-content {
         max-height: calc(100vh - 96px);
         overflow-y: auto;

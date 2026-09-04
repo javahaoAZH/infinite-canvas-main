@@ -60,6 +60,36 @@ function Thumb({ url, name, size = 40 }: { url?: string; name: string; size?: nu
     return <Image src={url} alt={name} width={size} height={size} className="rounded object-cover" />;
 }
 
+function AssetPreviewCell({ token, project, entry, onOpen }: { token: string; project: string; entry: AssetEntry; onOpen: () => void }) {
+    const files = entryCurrentFiles(entry);
+    const [images, setImages] = useState<Array<{ file: string; url: string }>>([]);
+    useEffect(() => {
+        let cancelled = false;
+        const urls: string[] = [];
+        void Promise.all(files.slice(0, 4).map(async (file) => {
+            const url = await loadAssetFileObjectUrl(token, project, file);
+            urls.push(url);
+            return { file, url };
+        })).then((value) => {
+            if (!cancelled) setImages(value);
+        }).catch(() => {
+            if (!cancelled) setImages([]);
+        });
+        return () => {
+            cancelled = true;
+            urls.forEach((url) => URL.revokeObjectURL(url));
+        };
+    }, [entry.当前版本, project, token]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!files.length) return <span className="text-xs text-muted-foreground">待产出</span>;
+    return (
+        <button type="button" onClick={onOpen} className="flex max-w-64 items-center gap-1.5 text-left" title={`查看 ${files.length} 张当前图片`}>
+            {images.map(({ file, url }, index) => <img key={file} src={url} alt={`${entry.名称} ${index + 1}`} className="size-12 shrink-0 rounded-md border border-border bg-background object-contain" />)}
+            {images.length < files.length ? <span className="flex size-12 shrink-0 items-center justify-center rounded-md border border-dashed border-border text-[10px] text-muted-foreground">+{files.length - images.length}</span> : null}
+            {!images.length ? <span className="flex h-12 min-w-24 items-center justify-center rounded-md border border-dashed border-border text-[10px] text-muted-foreground">图片加载中</span> : null}
+        </button>
+    );
+}
+
 // 项目资产清单面板：D 盘项目文件夹为唯一事实源。
 // 双视图：【按季投产】季→集→镜头（分镜稿+所需资产，生产导向，默认）／【资产库】六分类跨集母资产。
 export function ProjectAssetsPanel({ initialProject = "" }: { initialProject?: string }) {
@@ -600,7 +630,7 @@ export function ProjectAssetsPanel({ initialProject = "" }: { initialProject?: s
                                         pagination={false}
                                         dataSource={episodeAssets}
                                         columns={[
-                                            { title: "缩略", width: 56, render: (_, entry: AssetEntry) => <Thumb url={thumbs[entry.编号]} name={entry.名称} /> },
+                                            { title: "当前图片", width: 240, render: (_, entry: AssetEntry) => token ? <AssetPreviewCell token={token} project={manifestKey} entry={entry} onOpen={() => setReviewEntry(entry)} /> : <Thumb url={thumbs[entry.编号]} name={entry.名称} /> },
                                             { title: "名称", dataIndex: "名称", width: 140 },
                                             { title: "分类", dataIndex: "分类", width: 70 },
                                             { title: "状态", dataIndex: "状态", width: 90, render: (value: string) => <Tag color={STATUS_COLOR[value] || "default"} className="m-0">{value}</Tag> },
@@ -635,10 +665,7 @@ export function ProjectAssetsPanel({ initialProject = "" }: { initialProject?: s
                                 dataSource={categoryEntries}
                                 pagination={false}
                                 columns={[
-                                    { title: "缩略", width: 72, render: (_, entry: AssetEntry) => {
-                                        const count = entryCurrentFiles(entry).length;
-                                        return <button type="button" className="relative block cursor-zoom-in" title={`查看当前版本全部 ${count} 张图片`} onClick={() => setReviewEntry(entry)}><Thumb url={thumbs[entry.编号]} name={entry.名称} />{count > 1 ? <span className="absolute -bottom-1 -right-2 rounded bg-foreground px-1 text-[9px] leading-4 text-background">{count}张</span> : null}</button>;
-                                    } },
+                                    { title: "当前图片", width: 240, render: (_, entry: AssetEntry) => token ? <AssetPreviewCell token={token} project={manifestKey} entry={entry} onOpen={() => setReviewEntry(entry)} /> : <Thumb url={thumbs[entry.编号]} name={entry.名称} /> },
                                     { title: "名称", dataIndex: "名称", width: 140 },
                                     { title: "层级", dataIndex: "层级", width: 100, render: (value: string) => value || "—" },
                                     { title: "事实", dataIndex: "事实等级", width: 90, render: (value: string) => value ? <Tag className="m-0">{value}</Tag> : "—" },

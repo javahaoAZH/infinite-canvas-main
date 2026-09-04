@@ -1,13 +1,12 @@
 "use client";
 
-// Codex 同构标题栏：左侧菜单（文件/编辑/视图/帮助）+ 品牌与搜索/通知（与侧栏同宽区）+ 当前项目标签 + 拖动区 + 右栏开关 + 窗口控制
-import { Clapperboard, FileText, Folder, Images, ListChecks, Menu as MenuIcon, Minus, MoreHorizontal, PanelRight, Search, Sparkles, Square, X } from "lucide-react";
+// Codex 同构标题栏：左侧菜单（文件/编辑/视图/帮助）+ 当前项目标签 + 拖动区 + 右栏开关 + 窗口控制（品牌/搜索/铃铛在侧栏顶部）
+import { Clapperboard, FileText, Folder, Images, ListChecks, Menu as MenuIcon, Minus, MoreHorizontal, PanelRight, Sparkles, Square, X } from "lucide-react";
 import { Dropdown, type MenuProps } from "antd";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMemo } from "react";
 
-import { SidebarNotifications } from "@/components/layout/sidebar-overlays";
 import { useCanvasStore } from "@/app/(user)/canvas/stores/use-canvas-store";
 import { useDramaStore } from "@/stores/use-drama-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -116,23 +115,6 @@ export function AppTitleBar({ railOpen, onRailToggle }: { railOpen: boolean; onR
                     </button>
                 </Dropdown>
             ))}
-            {/* 品牌与搜索/通知：与侧栏同宽区（对标 ChatGPT 桌面版标题栏左侧） */}
-            <div className="ml-1 flex w-[232px] shrink-0 items-center gap-0.5 border-l border-border pl-1.5" data-no-drag>
-                <Link href="/" className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold text-foreground transition-colors hover:bg-foreground/8" title="返回首页">
-                    <span className="size-3.5 shrink-0 bg-current" style={{ mask: "url(/logo.svg) center / contain no-repeat", WebkitMask: "url(/logo.svg) center / contain no-repeat" }} />
-                    <span className="truncate">无限画布</span>
-                </Link>
-                <button
-                    type="button"
-                    className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/8 hover:text-foreground"
-                    title="统一搜索"
-                    aria-label="统一搜索"
-                    onClick={() => window.dispatchEvent(new CustomEvent("sidebar-search-open"))}
-                >
-                    <Search className="size-4" />
-                </button>
-                <SidebarNotifications />
-            </div>
             {/* 当前项目标签 */}
             <div className="ml-2 flex min-w-0 items-center" data-no-drag>
                 <span className="flex h-7 min-w-0 max-w-[300px] items-center gap-1.5 rounded-md bg-foreground/8 px-2 text-xs text-foreground">
